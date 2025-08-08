@@ -83,7 +83,8 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
     raise newException(ValueError, "Interpolation failed")
 
 
-proc Q_eff(cell: Cell): Charge =
+# Calculate the effecitve capacity of the cell based on temperature
+proc Q_effective(cell: Cell): Charge =
   let factor = interpolate(cell.param.tempTab, cell.T)
   return cell.param.Q_bol * factor
 
@@ -95,7 +96,7 @@ proc soh(cell: Cell): Soh =
 
 proc T_to_R_factor(cell: Cell): float =
   let param = cell.param
-  return interpolate(param.trTab, 273 - 25)
+  return interpolate(param.trTab, cell.T)
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
   let n = len(cp.socTab)
@@ -114,7 +115,8 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
 proc get_soc(cell: Cell): Soc =
   if cell.C > 0.0:
     raise newException(ValueError, "Charge must be <= than zero")
-  return (cell.Q_eff + cell.C) / cell.Q_eff
+  let Q_effective = cell.Q_effective
+  return (Q_effective + cell.C) / Q_effective
 
 
 proc update(cell: var Cell, I: Current, dT: float): Voltage =
@@ -201,20 +203,16 @@ proc report(cell: Cell) =
 proc discharge(cell: var Cell, I: Current) =
   if I >= 0.0:
     raise newException(ValueError, "Discharge current must be negative")
-  while true:
+  while cell.get_soc() > 0.0:
     let U = cell.update(I, 1.0)
     cell.report()
-    if U <= 2.5:
-      break
 
 proc charge(cell: var Cell, I: Current) =
   if I <= 0.0:
     raise newException(ValueError, "Charge current must be positive")
-  while true:
+  while cell.get_soc() < 1.0:
     let U = cell.update(I, 1.0)
     cell.report()
-    if U >= 4.1:
-      break
 
 var cell = newCell(param)
 
