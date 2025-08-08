@@ -14,7 +14,8 @@ type
   Power = float
   SocTab = seq[Voltage]
 
-  TempTab = seq[tuple[T: Temperature, f: float]]
+  Tab[A, B] = seq[(A, B)]
+
   SohTab = seq[tuple[Q: Charge, f: float]]
 
   CellParam = object
@@ -23,7 +24,8 @@ type
     C1: Capacitance
     Q_bol: Charge
     socTab: SocTab
-    tempTab: TempTab
+    tempTab: Tab[Temperature, float]
+    trTab: Tab[Temperature, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
     n_SOH_50: float
@@ -62,27 +64,28 @@ proc newCell(param: CellParam): Cell =
 
 proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
 proc Q_to_Ah(Q: Charge): float = return Q / 3600.0
+proc T_to_K(T: Temperature): Temperature = return T + 273.15
+
+proc interpolate[A, B](tab: Tab[A, B], x: A): B =
+  let n = len(tab)
+  if x <= tab[0][0]:
+    return tab[0][1]
+  elif x >= tab[n - 1][0]:
+    return tab[n - 1][1]
+  else:
+    for i in 0 ..< n - 1:
+      if tab[i][0] <= x and x <= tab[i + 1][0]:
+        let f1 = tab[i][1]
+        let f2 = tab[i + 1][1]
+        let x1 = tab[i][0]
+        let x2 = tab[i + 1][0]
+        return f1 + (f2 - f1) * (x - x1) / (x2 - x1)
+    raise newException(ValueError, "Interpolation failed")
 
 
 proc Q_eff(cell: Cell): Charge =
-  let param = cell.param
-  let T = cell.T
-  let n = len(param.tempTab)
-  var factor = 1.0
-  if T <= param.tempTab[0].T:
-    factor = param.tempTab[0].f
-  elif T >= param.tempTab[n - 1].T:
-    factor = param.tempTab[n - 1].f
-  else:
-    for i in 0 ..< n - 1:
-      if param.tempTab[i].T <= T and T <= param.tempTab[i + 1].T:
-        let f1 = param.tempTab[i].f
-        let f2 = param.tempTab[i + 1].f
-        let T1 = param.tempTab[i].T
-        let T2 = param.tempTab[i + 1].T
-        factor = f1 + (f2 - f1) * (T - T1) / (T2 - T1)
-        break
-  return param.Q_bol * factor
+  let factor = interpolate(cell.param.tempTab, cell.T)
+  return cell.param.Q_bol * factor
 
 
 proc soh(cell: Cell): Soh =
@@ -90,11 +93,9 @@ proc soh(cell: Cell): Soh =
   let cycles = cell.Q_total / cell.param.Q_bol
   return 1.0 - 0.5 * (cycles / n_SOH_50)
 
-  
-  
-
-  
-
+proc T_to_R_factor(cell: Cell): float =
+  let param = cell.param
+  return interpolate(param.trTab, 273 - 25)
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
   let n = len(cp.socTab)
@@ -122,9 +123,14 @@ proc update(cell: var Cell, I: Current, dT: float): Voltage =
   # Update the current in the cell
   cell.I = I
 
+  # R_factor
+  let R_factor = cell.T_to_R_factor()
+  let R0 = param.R0 * R_factor
+  let R1 = param.R1 * R_factor
+
   # Update the equivalent circuit model and get voltage drop
-  let U0 = I * param.R0
-  let I_R1 = cell.model.U1 / param.R1
+  let U0 = I * R0
+  let I_R1 = cell.model.U1 / R1
   let I_C1 = I - I_R1
   cell.model.U1 += dT * I_C1 / param.C1
   let dU = U0 + cell.model.U1
@@ -141,8 +147,8 @@ proc update(cell: var Cell, I: Current, dT: float): Voltage =
   cell.Q_total += abs(dC)
 
   # Update cell temperature
-  let P_R0 = I * I * param.R0
-  let P_R1 = I_R1 * I_R1 * param.R1
+  let P_R0 = I * I * R0
+  let P_R1 = I_R1 * I_R1 * R1
   let P_dis = P_R0 + P_R1 + P_loss
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dT / param.Cth
@@ -172,10 +178,15 @@ let param = CellParam(
     4.032, 4.055, 4.072, 4.081, 4.086, 4.090, 4.094, 4.100,
   ],
   tempTab: @[
-    (-20.0, 0.4),
-    (-10.0, 0.5),
-    (  0.0, 0.7),
-    ( 25.0, 1.0),
+    (T_to_K(-20.0), 0.4),
+    (T_to_K(-10.0), 0.5),
+    (T_to_K(  0.0), 0.7),
+    (T_to_K( 25.0), 1.0),
+  ],
+  trTab: @[
+    (T_to_K(-20.0), 1.5),
+    (T_to_K(  0.0), 1.2),
+    (T_to_K( 25.0), 1.0)
   ],
   charge_eff: 0.99,
 )
@@ -206,7 +217,6 @@ proc charge(cell: var Cell, I: Current) =
       break
 
 var cell = newCell(param)
-#cell.discharge(-5.0)
 
 for i in 0 ..< 2:
   cell.discharge(-1.0)
