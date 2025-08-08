@@ -30,6 +30,7 @@ type
     Rth: Resistance # thermal resistance, K/W
     n_SOH_50: float
     charge_eff: float
+    peukert: float
 
   CellModel = object
     U1: Voltage
@@ -83,16 +84,22 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
     raise newException(ValueError, "Interpolation failed")
 
 
-# Calculate the effecitve capacity of the cell based on temperature
 proc Q_effective(cell: Cell): Charge =
-  let factor = interpolate(cell.param.tempTab, cell.T)
-  return cell.param.Q_bol * factor
+  # Temperature factor
+  let T_factor = interpolate(cell.param.tempTab, cell.T)
+  # Peukert factor
+  var P_factor = 1.0
+  if cell.I < 0:
+    let I_ref = cell.param.Q_bol / 3600
+    P_factor = pow(abs(cell.I) / I_ref, 1 - cell.param.peukert)
+  return cell.param.Q_bol * T_factor * P_factor
 
 
-proc soh(cell: Cell): Soh =
+proc get_soh(cell: Cell): Soh =
   let n_SOH_50 = cell.param.n_SOH_50 # this many cycles is soh 0.5
   let cycles = cell.Q_total / cell.param.Q_bol
   return 1.0 - 0.5 * (cycles / n_SOH_50)
+
 
 proc T_to_R_factor(cell: Cell): float =
   let param = cell.param
@@ -113,8 +120,8 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   
 
 proc get_soc(cell: Cell): Soc =
-  if cell.C > 0.0:
-    raise newException(ValueError, "Charge must be <= than zero")
+  #if cell.C > 0.0:
+  #  raise newException(ValueError, "Charge must be <= than zero")
   let Q_effective = cell.Q_effective
   return (Q_effective + cell.C) / Q_effective
 
@@ -145,7 +152,7 @@ proc update(cell: var Cell, I: Current, dT: float): Voltage =
     P_loss = cell.U * I * (1.0 - param.charge_eff)
 
   cell.C += dC
-  cell.C = cell.C.clamp(-param.Q_bol, 0.0)
+  #cell.C = cell.C.clamp(-param.Q_bol, 0.0)
   cell.Q_total += abs(dC)
 
   # Update cell temperature
@@ -191,13 +198,13 @@ let param = CellParam(
     (T_to_K( 25.0), 1.0)
   ],
   charge_eff: 0.99,
+  peukert: 1.01,
 )
 
 
 
 proc report(cell: Cell) =
-  echo $cell.I & " " & $cell.U & " " & $cell.get_soc()& " " & $(cell.T-273) & " " & $cell.soh()
-  
+  echo $cell.I & " " & $cell.U & " " & $cell.get_soc()& " " & $(cell.T-273) & " " & $cell.get_soh()
 
 
 proc discharge(cell: var Cell, I: Current) =
@@ -217,7 +224,7 @@ proc charge(cell: var Cell, I: Current) =
 var cell = newCell(param)
 
 for i in 0 ..< 2:
-  cell.discharge(-1.0)
-  cell.charge(+1.0)
+  cell.discharge(-2.0)
+  cell.charge(+2.0)
 
 
