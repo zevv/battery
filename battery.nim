@@ -1,5 +1,5 @@
 
-import std/[sequtils, tables, strutils, math]
+import std/[sequtils, tables, strutils, math, times, options, os, strformat]
 
 type 
 
@@ -12,7 +12,10 @@ type
   Current = float
   Charge = float
   Power = float
+  Duration = float
   SocTab = seq[Voltage]
+
+  Lowpass = proc(value: float): float
 
   Tab[A, B] = seq[(A, B)]
 
@@ -23,9 +26,10 @@ type
     R1: Resistance
     C1: Capacitance
     Q_bol: Charge
-    socTab: SocTab
-    tempTab: Tab[Temperature, float]
-    trTab: Tab[Temperature, float]
+    soc_tab: SocTab
+    temp_tab: Tab[Temperature, float]
+    T_R_tab: Tab[Temperature, float]
+    SOH_R_tab: Tab[Soh, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
     n_SOH_50: float
@@ -46,6 +50,7 @@ type
     U: Voltage
     U_ocv: Voltage
     U_ocv_prev: Voltage
+    soc_lowpass: Lowpass
     
   Module = object
     parallel: seq[Cell]
@@ -53,19 +58,14 @@ type
   Pack = object
     series: seq[Module]
 
+  Simulation = ref object
+    cells: seq[Cell]
+    time: float
+    dt: float
 
-proc newCell(param: CellParam): Cell =
-  var cell = new Cell
-  cell.param = param
-  cell.model = CellModel(U1: 0.0)
-  cell.C = 0.0
-  cell.T = 273 + 25.0
-  cell.T_ambient = 273 + 25.0
-  return cell
 
 proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
 proc Q_to_Ah(Q: Charge): float = return Q / 3600.0
-proc T_to_K(T: Temperature): Temperature = return T + 273.15
 
 proc interpolate[A, B](tab: Tab[A, B], x: A): B =
   let n = len(tab)
@@ -83,10 +83,33 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
         return f1 + (f2 - f1) * (x - x1) / (x2 - x1)
     raise newException(ValueError, "Interpolation failed")
 
+proc mk_lowpass(alpha: float): Lowpass =
+  var first = true
+  var lp = 0.0
+  return proc(value: float): float =
+    if first:
+      first = false
+      lp = value
+      return value
+    else:
+      lp = (1.0-alpha) * lp + (alpha) * value
+      return lp
 
-proc Q_effective(cell: Cell): Charge =
+
+proc newCell(param: CellParam): Cell =
+  var cell = new Cell
+  cell.param = param
+  cell.model = CellModel(U1: 0.0)
+  cell.C = 0.0
+  cell.T = 20.0
+  cell.T_ambient = 20.0
+  cell.soc_lowpass = mk_lowpass(0.1)
+  return cell
+
+
+proc get_Q_effective(cell: Cell): Charge =
   # Temperature factor
-  let T_factor = interpolate(cell.param.tempTab, cell.T)
+  let T_factor = interpolate(cell.param.temp_tab, cell.T)
   # Peukert factor
   var P_factor = 1.0
   if cell.I < 0:
@@ -102,49 +125,49 @@ proc get_soh(cell: Cell): Soh =
 
 
 proc T_to_R_factor(cell: Cell): float =
-  let param = cell.param
-  return interpolate(param.trTab, cell.T)
+  return interpolate(cell.param.T_R_tab, cell.T)
+
+proc SOH_to_R_factor(cell: Cell): float =
+  return interpolate(cell.param.SOH_R_tab, cell.get_soh())
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
-  let n = len(cp.socTab)
+  let n = len(cp.soc_tab)
   if soc <= 0.0:
-    return cp.socTab[0]
+    return cp.soc_tab[0]
   if soc >= 1.0:
-    return cp.socTab[n - 1]
+    return cp.soc_tab[n - 1]
   let idx = int(soc * (n - 1).float)
-  let f1 = cp.socTab[idx]
-  let f2 = cp.socTab[idx + 1]
+  let f1 = cp.soc_tab[idx]
+  let f2 = cp.soc_tab[idx + 1]
   let soc1 = float(idx) / (n - 1).float
   let soc2 = float(idx + 1) / (n - 1).float
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
   
 
 proc get_soc(cell: Cell): Soc =
-  #if cell.C > 0.0:
-  #  raise newException(ValueError, "Charge must be <= than zero")
-  let Q_effective = cell.Q_effective
+  let Q_effective = cell.get_Q_effective()
   return (Q_effective + cell.C) / Q_effective
 
 
-proc update(cell: var Cell, I: Current, dT: float): Voltage =
+proc update(cell: Cell, I: Current, dT: float) =
   let param = cell.param
 
   # Update the current in the cell
   cell.I = I
 
-  # R_factor
-  let R_factor = cell.T_to_R_factor()
+  # Resistance depends on temperature
+  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor()
   let R0 = param.R0 * R_factor
   let R1 = param.R1 * R_factor
 
-  # Update the equivalent circuit model and get voltage drop
+  # Update the equivalent circuit model to calculate dU
   let U0 = I * R0
   let I_R1 = cell.model.U1 / R1
   let I_C1 = I - I_R1
   cell.model.U1 += dT * I_C1 / param.C1
   let dU = U0 + cell.model.U1
 
-  # Update the cell charge
+  # Update the cell charge, taking into account the charge efficiency
   var P_loss = 0.0
   var dC = I * dT
   if I > 0.0:
@@ -152,7 +175,7 @@ proc update(cell: var Cell, I: Current, dT: float): Voltage =
     P_loss = cell.U * I * (1.0 - param.charge_eff)
 
   cell.C += dC
-  #cell.C = cell.C.clamp(-param.Q_bol, 0.0)
+  #cell.C = cell.C.clamp(-param.Q_bol - 100, 100.0)
   cell.Q_total += abs(dC)
 
   # Update cell temperature
@@ -163,11 +186,10 @@ proc update(cell: var Cell, I: Current, dT: float): Voltage =
   cell.T += (P_dis - P_env) * dT / param.Cth
 
   # Get OCV from SOC
-  let soc = cell.get_soc()
+  let soc = cell.soc_lowpass(cell.get_soc())
   cell.U_ocv_prev = cell.U_ocv
   cell.U_ocv = SOC_to_U(param, soc)
   cell.U = cell.U_ocv + dU
-  return cell.U
 
 
 
@@ -179,52 +201,92 @@ let param = CellParam(
   Rth: 5.0,
   Q_bol: Q_from_Ah(2.5),
   n_SOH_50: 500,
-  socTab: @[
-    2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258, 3.304,
-    3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571, 3.594,
-    3.615, 3.638, 3.659, 3.679, 3.700, 3.722, 3.744, 3.766, 3.786, 3.805,
-    3.823, 3.839, 3.855, 3.873, 3.893, 3.913, 3.932, 3.953, 3.977, 4.005,
-    4.032, 4.055, 4.072, 4.081, 4.086, 4.090, 4.094, 4.100,
+  soc_tab: @[
+    2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
+    3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
+    3.594, 3.615, 3.638, 3.659, 3.679, 3.700, 3.722, 3.744, 3.766, 3.786,
+    3.805, 3.823, 3.839, 3.855, 3.873, 3.893, 3.913, 3.932, 3.953, 3.977,
+    4.005, 4.032, 4.055, 4.072, 4.081, 4.086, 4.090, 4.094, 4.100, 4.120,
+    4.150, 4.200
   ],
-  tempTab: @[
-    (T_to_K(-20.0), 0.4),
-    (T_to_K(-10.0), 0.5),
-    (T_to_K(  0.0), 0.7),
-    (T_to_K( 25.0), 1.0),
+  temp_tab: @[
+    (-20.0, 0.4),
+    (-10.0, 0.5),
+    (  0.0, 0.7),
+    ( 20.0, 1.0),
   ],
-  trTab: @[
-    (T_to_K(-20.0), 1.5),
-    (T_to_K(  0.0), 1.2),
-    (T_to_K( 25.0), 1.0)
+  T_R_tab: @[
+    (-20.0, 1.5),
+    (  0.0, 1.2),
+    ( 20.0, 1.0)
   ],
-  charge_eff: 0.99,
+  SOH_R_tab: @[
+    (0.0, 1.5),
+    (0.2, 1.3),
+    (0.4, 1.2),
+    (0.6, 1.1),
+    (0.8, 1.05),
+    (1.0, 1.0)
+  ],
+  charge_eff: 0.96,
   peukert: 1.01,
 )
 
 
+proc newSimulation(dT: float): Simulation =
+  result = new Simulation
+  result.dt = dT
+
+
+proc add_cell(sim: Simulation, cell: Cell) =
+  sim.cells.add(cell)
 
 proc report(cell: Cell) =
-  echo $cell.I & " " & $cell.U & " " & $cell.get_soc()& " " & $(cell.T-273) & " " & $cell.get_soh()
+  echo fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
 
 
-proc discharge(cell: var Cell, I: Current) =
-  if I >= 0.0:
-    raise newException(ValueError, "Discharge current must be negative")
-  while cell.get_soc() > 0.0:
-    let U = cell.update(I, 1.0)
-    cell.report()
 
-proc charge(cell: var Cell, I: Current) =
-  if I <= 0.0:
-    raise newException(ValueError, "Charge current must be positive")
-  while cell.get_soc() < 1.0:
-    let U = cell.update(I, 1.0)
-    cell.report()
+proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
+  while true:
+    var all_ok = true
+    for cell in sim.cells:
+      cell.update(I, sim.dt)
+      cell.report()
+      if not condition(cell):
+        all_ok = false
+    if not all_ok:
+      break
+    sim.time += sim.dt
 
+
+proc discharge(sim: Simulation, I: Current) =
+  sim.run_while(I, proc(cell: Cell): bool = 
+    cell.U > 2.5
+  )
+
+proc charge(sim: Simulation, I: Current) =
+  sim.run_while(I, proc(cell: Cell): bool =
+    cell.get_soc() < 1.0
+  )
+
+proc rest(sim: Simulation, d: Duration) =
+  let t_end = sim.time + d
+  while sim.time < t_end:
+    for cell in sim.cells:
+      cell.update(0.0, sim.dt)
+      cell.report()
+    sim.time += sim.dt
+
+
+var sim = newSimulation(5.0)
 var cell = newCell(param)
+sim.add_cell(cell)
+
 
 for i in 0 ..< 2:
-  cell.discharge(-2.0)
-  cell.charge(+2.0)
+  sim.discharge(-8.0)
+  sim.rest(600)
+  sim.charge(+4.0)
+  sim.rest(600)
 
 
