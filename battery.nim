@@ -19,12 +19,12 @@ type
 
   Tab[A, B] = seq[(A, B)]
 
-  SohTab = seq[tuple[Q: Charge, f: float]]
-
   CellParam = object
     R0: Resistance
     R1: Resistance
+    R2: Resistance
     C1: Capacitance
+    C2: Capacitance
     Q_bol: Charge
     soc_tab: SocTab
     temp_tab: Tab[Temperature, float]
@@ -38,11 +38,13 @@ type
 
   CellModel = object
     U1: Voltage
+    U2: Voltage
 
   Cell = ref object
     param: CellParam
     model: CellModel
     C: Charge # energy taken out
+    R: Resistance
     Q_total: Charge
     T_ambient: Temperature
     T: Temperature
@@ -99,8 +101,9 @@ proc mk_lowpass(alpha: float): Lowpass =
 proc newCell(param: CellParam): Cell =
   var cell = new Cell
   cell.param = param
-  cell.model = CellModel(U1: 0.0)
+  cell.model = CellModel()
   cell.C = 0.0
+  cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
   cell.T = 20.0
   cell.T_ambient = 20.0
   cell.soc_lowpass = mk_lowpass(0.1)
@@ -127,8 +130,10 @@ proc get_soh(cell: Cell): Soh =
 proc T_to_R_factor(cell: Cell): float =
   return interpolate(cell.param.T_R_tab, cell.T)
 
+
 proc SOH_to_R_factor(cell: Cell): float =
   return interpolate(cell.param.SOH_R_tab, cell.get_soh())
+
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
   let n = len(cp.soc_tab)
@@ -159,13 +164,23 @@ proc update(cell: Cell, I: Current, dT: float) =
   let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor()
   let R0 = param.R0 * R_factor
   let R1 = param.R1 * R_factor
+  let R2 = param.R2 * R_factor
+  cell.R = R0 + R1 + R2
 
   # Update the equivalent circuit model to calculate dU
   let U0 = I * R0
+
+  # Update first RC pair (charge transfer)
   let I_R1 = cell.model.U1 / R1
   let I_C1 = I - I_R1
   cell.model.U1 += dT * I_C1 / param.C1
-  let dU = U0 + cell.model.U1
+
+  # Update second RC pair (diffusion)
+  let I_R2 = cell.model.U2 / R2
+  let I_C2 = I - I_R2
+  cell.model.U2 += dT * I_C2 / param.C2
+
+  let dU = U0 + cell.model.U1 + cell.model.U2
 
   # Update the cell charge, taking into account the charge efficiency
   var P_loss = 0.0
@@ -181,7 +196,8 @@ proc update(cell: Cell, I: Current, dT: float) =
   # Update cell temperature
   let P_R0 = I * I * R0
   let P_R1 = I_R1 * I_R1 * R1
-  let P_dis = P_R0 + P_R1 + P_loss
+  let P_R2 = I_R2 * I_R2 * R2
+  let P_dis = P_R0 + P_R1 + P_R2 + P_loss
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dT / param.Cth
 
@@ -194,11 +210,13 @@ proc update(cell: Cell, I: Current, dT: float) =
 
 
 let param = CellParam(
-  R0: 7.0e-3,
-  R1: 15.0e-3,
-  C1: 1500.0,
-  Cth: 25.0,
-  Rth: 5.0,
+  R0:     0.03,
+  R1:     0.02,
+  R2:     0.01,
+  C1:  3000.0,
+  C2: 25000.0,
+  Cth:   25.0,
+  Rth:    5.0,
   Q_bol: Q_from_Ah(2.5),
   n_SOH_50: 500,
   soc_tab: @[
@@ -269,7 +287,7 @@ proc charge(sim: Simulation, I: Current) =
     cell.get_soc() < 1.0
   )
 
-proc rest(sim: Simulation, d: Duration) =
+proc sleep(sim: Simulation, d: Duration) =
   let t_end = sim.time + d
   while sim.time < t_end:
     for cell in sim.cells:
@@ -285,8 +303,8 @@ sim.add_cell(cell)
 
 for i in 0 ..< 1:
   sim.discharge(-8.0)
-  sim.rest(600)
+  sim.sleep(600)
   sim.charge(+4.0)
-  sim.rest(600)
+  sim.sleep(600)
 
 
