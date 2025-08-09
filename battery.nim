@@ -283,7 +283,7 @@ var cell = newCell(param)
 sim.add_cell(cell)
 
 
-for i in 0 ..< 2:
+for i in 0 ..< 1:
   sim.discharge(-8.0)
   sim.rest(600)
   sim.charge(+4.0)
