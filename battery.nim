@@ -62,6 +62,7 @@ type
 
   Simulation = ref object
     cells: seq[Cell]
+    pack: Pack
     time: float
     dt: float
 
@@ -278,9 +279,10 @@ proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
 
 
 proc discharge(sim: Simulation, I: Current) =
-  sim.run_while(I, proc(cell: Cell): bool = 
-    cell.U > 2.5
-  )
+  discard
+  #sim.run_while(I, proc(cell: Cell): bool = 
+  #  cell.U > 2.5
+  #)
 
 proc charge(sim: Simulation, I: Current) =
   sim.run_while(I, proc(cell: Cell): bool =
@@ -297,8 +299,17 @@ proc sleep(sim: Simulation, d: Duration) =
 
 
 var sim = newSimulation(5.0)
-var cell = newCell(param)
-sim.add_cell(cell)
+sim.pack = Pack(
+  series: @[
+    Module(
+      parallel: @[
+        newCell(param),
+        newCell(param),
+        newCell(param)
+      ]
+    )
+  ]
+)
 
 
 for i in 0 ..< 1:
