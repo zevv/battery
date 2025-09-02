@@ -1,19 +1,6 @@
 
 import std/[sequtils, tables, strutils, math, times, options, os, strformat, random]
 
-# Critique: This is a significant simplification. In a real cell, these factors
-# affect the different sources of resistance differently:
-# 
-# Ohmic Resistance (R0​): Primarily affected by temperature's influence on
-# electrolyte and electrode conductivity.
-# 
-# Charge Transfer Resistance (R1​): Strongly dependent on temperature
-# (Arrhenius behavior) and the kinetics at the electrode-electrolyte interface,
-# which varies with SOC.
-# 
-# Diffusion Resistance (R2​): Highly dependent on SOC, as it relates to
-# the concentration gradients of lithium ions within the electrodes.
-
 type 
 
   Soc = float
@@ -56,6 +43,7 @@ type
     R0: Resistance
     R1: Resistance
     R2: Resistance
+    U0: Voltage
     U1: Voltage
     U2: Voltage
 
@@ -70,6 +58,7 @@ type
     I: Current
     U: Voltage
     U_ocv: Voltage
+    U_src: Voltage
     U_ocv_prev: Voltage
     soc_lowpass: Lowpass
     fd_log: File
@@ -107,6 +96,7 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
         return f1 + (f2 - f1) * (x - x1) / (x2 - x1)
     raise newException(ValueError, "Interpolation failed")
 
+
 proc mk_lowpass(alpha: float): Lowpass =
   var first = true
   var lp = 0.0
@@ -135,8 +125,8 @@ proc newCell(param: CellParam, idx: int): Cell =
   #cell.param.Q_bol *= rand(1.00 .. 1.00)
   #cell.param.R0 *= rand(1.00 .. 1.00)
   if idx == 0:
-    cell.param.Q_bol *= 0.99
-    #cell.param.R0 *= 0.99
+    #cell.param.Q_bol *= 0.99
+    cell.param.R0 *= 0.99
     discard
 
   let fname = fmt"/tmp/cell_{idx:02}.log"
@@ -194,35 +184,48 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
 
 
+# Critique: This is a significant simplification. In a real cell, these factors
+# affect the different sources of resistance differently:
+# 
+# Ohmic Resistance (R0): Primarily affected by temperature's influence on
+# electrolyte and electrode conductivity.
+# 
+# Charge Transfer Resistance (R1): Strongly dependent on temperature
+# (Arrhenius behavior) and the kinetics at the electrode-electrolyte interface,
+# which varies with SOC.
+# 
+# Diffusion Resistance (R2): Highly dependent on SOC, as it relates to
+# the concentration gradients of lithium ions within the electrodes.
+
+proc update_R(cell: Cell) =
+  let param = cell.param
+  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor() * cell.SOC_to_R_factor()
+  cell.model.R0 = param.R0 * R_factor
+  cell.model.R1 = param.R1 * R_factor
+  cell.model.R2 = param.R2 * R_factor
+  cell.R = cell.model.R0 + cell.model.R1 + cell.model.R2
+
+
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
-  var model = cell.model
-  var I = I
 
   # Update the current in the cell
   cell.I = I
 
-  # Resistance depends on temperature
-  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor() * cell.SOC_to_R_factor()
-  model.R0 = param.R0 * R_factor
-  model.R1 = param.R1 * R_factor
-  model.R2 = param.R2 * R_factor
-  cell.R = model.R0 + model.R1 + model.R2
-
   # Update the equivalent circuit model to calculate dU
-  let U0 = I * model.R0
+  cell.model.U0 = I * cell.model.R0
 
   # Update first RC pair (charge transfer)
-  let I_R1 = model.U1 / model.R1
+  let I_R1 = cell.model.U1 / cell.model.R1
   let I_C1 = I - I_R1
-  model.U1 += dt * I_C1 / param.C1
+  cell.model.U1 += dt * I_C1 / param.C1
 
   # Update second RC pair (diffusion)
-  let I_R2 = model.U2 / model.R2
+  let I_R2 = cell.model.U2 / cell.model.R2
   let I_C2 = I - I_R2
-  model.U2 += dt * I_C2 / param.C2
+  cell.model.U2 += dt * I_C2 / param.C2
 
-  let dU = U0 + cell.model.U1 + cell.model.U2
+  let dU = cell.model.U0 + cell.model.U1 + cell.model.U2
 
   # Update the cell charge, taking into account the charge efficiency
   var P_loss = 0.0
@@ -237,9 +240,9 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   cell.Q_total += abs(dC)
 
   # Update cell temperature
-  let P_R0 = I * I * model.R0
-  let P_R1 = I_R1 * I_R1 * model.R1
-  let P_R2 = I_R2 * I_R2 * model.R2
+  let P_R0 = I * I * cell.model.R0
+  let P_R1 = I_R1 * I_R1 * cell.model.R1
+  let P_R2 = I_R2 * I_R2 * cell.model.R2
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dt / param.Cth
@@ -248,6 +251,7 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   let soc = cell.soc_lowpass(cell.get_soc())
   cell.U_ocv_prev = cell.U_ocv
   cell.U_ocv = SOC_to_U(param, soc)
+  cell.U_src = cell.U_ocv + cell.model.U1 + cell.model.U2
   cell.U = cell.U_ocv + dU
 
 
@@ -327,18 +331,40 @@ proc balance(sim: Simulation, pack: var Pack) =
     for cell in module.parallel:
       let dU = cell.U - U_min
       if dU > 0.01:
-        I_balance += -0.010
+        I_balance += -0.020
     module.I_balance = I_balance
 
 
-proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
+proc run_while(sim: Simulation, I_pack: Current, condition: proc(cell: Cell): bool) =
   while true:
     var all_ok = true
     var i = 0
+
     sim.balance(sim.pack)
+
     for module in sim.pack.series:
+     
+      # Current in the module is pack current + balancing current
+      let I_module = I_pack + module.I_balance
+
+      var sum_U_div_R = 0.0
+      var sum_1_div_R = 0.0
+
+      # Calculate parallel resistance of all cells in the module
+      var Rinv = 0.0
       for cell in module.parallel:
-        cell.update(I + module.I_balance, sim.dt)
+        cell.update_R()
+
+        sum_U_div_R += cell.U_src / cell.model.R0
+        sum_1_div_R += 1.0 / cell.model.R0
+
+      let U_module = (I_module + sum_U_div_R) / sum_1_div_R
+
+      for cell in module.parallel:
+
+        let I_cell = (U_module - cell.U_src) / cell.model.R0
+
+        cell.update(I_cell, sim.dt)
         sim.report(cell, i)
         if not condition(cell):
           all_ok = false
@@ -370,27 +396,24 @@ sim.pack = Pack(
     Module(
       parallel: @[
         newCell(param, 0),
-      ]
-    ),
-    Module(
-      parallel: @[
         newCell(param, 1),
       ]
     ),
     Module(
       parallel: @[
         newCell(param, 2),
+        newCell(param, 3),
       ]
     ),
   ]
 )
 
 
-for i in 0 ..< 100:
+for i in 0 ..< 200:
   sim.cycle_number = i
-  sim.discharge(-4.0)
-  sim.sleep(600)
+  sim.discharge(-8.0)
+  sim.sleep(1200)
   sim.charge(+4.0)
-  sim.sleep(600)
+  sim.sleep(1200)
 
 
