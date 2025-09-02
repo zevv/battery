@@ -1,6 +1,19 @@
 
 import std/[sequtils, tables, strutils, math, times, options, os, strformat, random]
 
+# Critique: This is a significant simplification. In a real cell, these factors
+# affect the different sources of resistance differently:
+# 
+# Ohmic Resistance (R0​): Primarily affected by temperature's influence on
+# electrolyte and electrode conductivity.
+# 
+# Charge Transfer Resistance (R1​): Strongly dependent on temperature
+# (Arrhenius behavior) and the kinetics at the electrode-electrolyte interface,
+# which varies with SOC.
+# 
+# Diffusion Resistance (R2​): Highly dependent on SOC, as it relates to
+# the concentration gradients of lithium ions within the electrodes.
+
 type 
 
   Soc = float
@@ -40,6 +53,9 @@ type
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
 
   CellModel = object
+    R0: Resistance
+    R1: Resistance
+    R2: Resistance
     U1: Voltage
     U2: Voltage
 
@@ -180,6 +196,7 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
 
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
+  var model = cell.model
   var I = I
 
   # Update the current in the cell
@@ -187,23 +204,23 @@ proc update(cell: Cell, I: Current, dt: Interval) =
 
   # Resistance depends on temperature
   let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor() * cell.SOC_to_R_factor()
-  let R0 = param.R0 * R_factor
-  let R1 = param.R1 * R_factor
-  let R2 = param.R2 * R_factor
-  cell.R = R0 + R1 + R2
+  model.R0 = param.R0 * R_factor
+  model.R1 = param.R1 * R_factor
+  model.R2 = param.R2 * R_factor
+  cell.R = model.R0 + model.R1 + model.R2
 
   # Update the equivalent circuit model to calculate dU
-  let U0 = I * R0
+  let U0 = I * model.R0
 
   # Update first RC pair (charge transfer)
-  let I_R1 = cell.model.U1 / R1
+  let I_R1 = model.U1 / model.R1
   let I_C1 = I - I_R1
-  cell.model.U1 += dt * I_C1 / param.C1
+  model.U1 += dt * I_C1 / param.C1
 
   # Update second RC pair (diffusion)
-  let I_R2 = cell.model.U2 / R2
+  let I_R2 = model.U2 / model.R2
   let I_C2 = I - I_R2
-  cell.model.U2 += dt * I_C2 / param.C2
+  model.U2 += dt * I_C2 / param.C2
 
   let dU = U0 + cell.model.U1 + cell.model.U2
 
@@ -220,9 +237,9 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   cell.Q_total += abs(dC)
 
   # Update cell temperature
-  let P_R0 = I * I * R0
-  let P_R1 = I_R1 * I_R1 * R1
-  let P_R2 = I_R2 * I_R2 * R2
+  let P_R0 = I * I * model.R0
+  let P_R1 = I_R1 * I_R1 * model.R1
+  let P_R2 = I_R2 * I_R2 * model.R2
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dt / param.Cth
@@ -369,7 +386,7 @@ sim.pack = Pack(
 )
 
 
-for i in 0 ..< 800:
+for i in 0 ..< 100:
   sim.cycle_number = i
   sim.discharge(-4.0)
   sim.sleep(600)
