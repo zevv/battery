@@ -13,6 +13,7 @@ type
   Charge = float
   Power = float
   Duration = float
+  Interval = float
   SocTab = seq[Voltage]
 
   Lowpass = proc(value: float): float
@@ -58,6 +59,7 @@ type
     fd_log: File
     
   Module = object
+    I_balance: Current
     parallel: seq[Cell]
 
   Pack = object
@@ -113,9 +115,13 @@ proc newCell(param: CellParam, idx: int): Cell =
   cell.soc_lowpass = mk_lowpass(0.1)
 
   # Deviations
-  cell.C *= rand(1.00 .. 1.00)
-  cell.param.Q_bol *= rand(1.00 .. 1.00)
-  cell.param.R0 *= rand(0.92 .. 1.00)
+
+  #cell.param.Q_bol *= rand(1.00 .. 1.00)
+  #cell.param.R0 *= rand(1.00 .. 1.00)
+  if idx == 0:
+    cell.param.Q_bol *= 0.99
+    #cell.param.R0 *= 0.99
+    discard
 
   let fname = fmt"/tmp/cell_{idx:02}.log"
   cell.fd_log = open(fname, fmWrite)
@@ -172,14 +178,9 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
 
 
-proc update(cell: Cell, I: Current, dT: float) =
+proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
   var I = I
-
-  # Balancing: during charge, balance all cells > 3.6V
-  var I_balance = 0.0
-  if cell.U > 4.1:
-    I -= I_balance
 
   # Update the current in the cell
   cell.I = I
@@ -197,18 +198,18 @@ proc update(cell: Cell, I: Current, dT: float) =
   # Update first RC pair (charge transfer)
   let I_R1 = cell.model.U1 / R1
   let I_C1 = I - I_R1
-  cell.model.U1 += dT * I_C1 / param.C1
+  cell.model.U1 += dt * I_C1 / param.C1
 
   # Update second RC pair (diffusion)
   let I_R2 = cell.model.U2 / R2
   let I_C2 = I - I_R2
-  cell.model.U2 += dT * I_C2 / param.C2
+  cell.model.U2 += dt * I_C2 / param.C2
 
   let dU = U0 + cell.model.U1 + cell.model.U2
 
   # Update the cell charge, taking into account the charge efficiency
   var P_loss = 0.0
-  var dC = I * dT
+  var dC = I * dt
   if I > 0.0:
     let dynamic_charge_eff = param.charge_eff - (cell.R * param.R_efficiency_factor)
     dC *= dynamic_charge_eff
@@ -224,7 +225,7 @@ proc update(cell: Cell, I: Current, dT: float) =
   let P_R2 = I_R2 * I_R2 * R2
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss
   let P_env = (cell.T - cell.T_ambient) / param.Rth
-  cell.T += (P_dis - P_env) * dT / param.Cth
+  cell.T += (P_dis - P_env) * dt / param.Cth
 
   # Get OCV from SOC
   let soc = cell.soc_lowpass(cell.get_soc())
@@ -243,7 +244,7 @@ let param = CellParam(
   Cth:   25.0,
   Rth:    5.0,
   Q_bol: Q_from_Ah(2.5),
-  n_SOH_50: 100,
+  n_SOH_50: 800,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
     3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
@@ -283,13 +284,13 @@ let param = CellParam(
   ],
   charge_eff: 0.96,
   peukert: 1.01,
-  R_efficiency_factor: 1.0,
+  R_efficiency_factor: 5.0,
 )
 
 
-proc newSimulation(dT: float): Simulation =
+proc newSimulation(dt: Interval): Simulation =
   result = new Simulation
-  result.dt = dT
+  result.dt = dt
 
 
 proc report(sim: Simulation, cell: Cell, idx: int) =
@@ -298,13 +299,29 @@ proc report(sim: Simulation, cell: Cell, idx: int) =
     cell.fd_log.writeLine(line)
 
 
+proc balance(sim: Simulation, pack: var Pack) =
+  var U_min = 1e6
+  for module in pack.series:
+    for cell in module.parallel:
+      if cell.U < U_min:
+        U_min = cell.U
+  for module in pack.series.mitems:
+    var I_balance = 0.0
+    for cell in module.parallel:
+      let dU = cell.U - U_min
+      if dU > 0.01:
+        I_balance += -0.010
+    module.I_balance = I_balance
+
+
 proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
   while true:
     var all_ok = true
     var i = 0
+    sim.balance(sim.pack)
     for module in sim.pack.series:
       for cell in module.parallel:
-        cell.update(I, sim.dt)
+        cell.update(I + module.I_balance, sim.dt)
         sim.report(cell, i)
         if not condition(cell):
           all_ok = false
@@ -352,11 +369,11 @@ sim.pack = Pack(
 )
 
 
-for i in 0 ..< 200:
+for i in 0 ..< 800:
   sim.cycle_number = i
-  sim.discharge(-8.0)
-  sim.sleep(1800)
+  sim.discharge(-4.0)
+  sim.sleep(600)
   sim.charge(+4.0)
-  sim.sleep(1800)
+  sim.sleep(600)
 
 
