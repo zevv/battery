@@ -122,12 +122,8 @@ proc newCell(param: CellParam, idx: int): Cell =
 
   # Deviations
 
-  #cell.param.Q_bol *= rand(1.00 .. 1.00)
-  #cell.param.R0 *= rand(1.00 .. 1.00)
-  if idx == 0:
-    #cell.param.Q_bol *= 0.99
-    cell.param.R0 *= 0.99
-    discard
+  cell.param.Q_bol *= rand(0.95 .. 1.00)
+  cell.param.R0 *= rand(0.95 .. 1.00)
 
   let fname = fmt"/tmp/cell_{idx:02}.log"
   cell.fd_log = open(fname, fmWrite)
@@ -146,8 +142,8 @@ proc get_Q_effective(cell: Cell): Charge =
   let T_factor = interpolate(cell.param.temp_tab, cell.T)
   # Peukert factor
   var P_factor = 1.0
-  if cell.I < 0:
-    let I_ref = cell.param.Q_bol / 3600
+  let I_ref = cell.param.Q_bol / 3600
+  if cell.I < -I_ref:
     P_factor = pow(abs(cell.I) / I_ref, 1 - cell.param.peukert)
   return cell.param.Q_bol * T_factor * P_factor * cell.get_soh()
 
@@ -184,25 +180,16 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
 
 
-# Critique: This is a significant simplification. In a real cell, these factors
-# affect the different sources of resistance differently:
-# 
-# Ohmic Resistance (R0): Primarily affected by temperature's influence on
-# electrolyte and electrode conductivity.
-# 
-# Charge Transfer Resistance (R1): Strongly dependent on temperature
-# (Arrhenius behavior) and the kinetics at the electrode-electrolyte interface,
-# which varies with SOC.
-# 
-# Diffusion Resistance (R2): Highly dependent on SOC, as it relates to
-# the concentration gradients of lithium ions within the electrodes.
-
 proc update_R(cell: Cell) =
   let param = cell.param
-  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor() * cell.SOC_to_R_factor()
-  cell.model.R0 = param.R0 * R_factor
-  cell.model.R1 = param.R1 * R_factor
-  cell.model.R2 = param.R2 * R_factor
+
+  let T_factor = cell.T_to_R_factor()
+  let SOH_factor = cell.SOH_to_R_factor()
+  let SOC_factor = cell.SOC_to_R_factor()
+
+  cell.model.R0 = param.R0 * T_factor * SOH_factor
+  cell.model.R1 = param.R1 * T_factor * SOC_factor * SOH_factor
+  cell.model.R2 = param.R2 * SOC_factor * SOH_factor
   cell.R = cell.model.R0 + cell.model.R1 + cell.model.R2
 
 
@@ -331,63 +318,85 @@ proc balance(sim: Simulation, pack: var Pack) =
     for cell in module.parallel:
       let dU = cell.U - U_min
       if dU > 0.01:
-        I_balance += -0.020
+        I_balance += -0.100
     module.I_balance = I_balance
 
 
-proc run_while(sim: Simulation, I_pack: Current, condition: proc(cell: Cell): bool) =
-  while true:
-    var all_ok = true
-    var i = 0
+proc step(sim: Simulation, I_pack: Current): Voltage =
 
-    sim.balance(sim.pack)
+  #sim.balance(sim.pack)
 
-    for module in sim.pack.series:
-     
-      # Current in the module is pack current + balancing current
-      let I_module = I_pack + module.I_balance
+  var i = 0
 
-      var sum_U_div_R = 0.0
-      var sum_1_div_R = 0.0
+  for module in sim.pack.series:
+   
+    # Current in the module is pack current + balancing current
+    let I_module = I_pack + module.I_balance
 
-      # Calculate parallel resistance of all cells in the module
-      var Rinv = 0.0
-      for cell in module.parallel:
-        cell.update_R()
+    var sum_U_div_R = 0.0
+    var sum_1_div_R = 0.0
 
-        sum_U_div_R += cell.U_src / cell.model.R0
-        sum_1_div_R += 1.0 / cell.model.R0
+    # Calculate parallel resistance of all cells in the module
+    var Rinv = 0.0
+    for cell in module.parallel:
+      cell.update_R()
 
-      let U_module = (I_module + sum_U_div_R) / sum_1_div_R
+      sum_U_div_R += cell.U_src / cell.model.R0
+      sum_1_div_R += 1.0 / cell.model.R0
 
-      for cell in module.parallel:
+    let U_module = (I_module + sum_U_div_R) / sum_1_div_R
+    result += U_module
 
-        let I_cell = (U_module - cell.U_src) / cell.model.R0
-
-        cell.update(I_cell, sim.dt)
-        sim.report(cell, i)
-        if not condition(cell):
-          all_ok = false
-    if not all_ok:
-          break
+    for cell in module.parallel:
+      sim.report(cell, i)
+      inc i
+      let I_cell = (U_module - cell.U_src) / cell.model.R0
+      cell.update(I_cell, sim.dt)
+        
     sim.time += sim.dt
 
 
-proc discharge(sim: Simulation, I: Current) =
-  sim.run_while(I, proc(cell: Cell): bool = 
-    cell.U > 2.5
-  )
+proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
+  while true:
+    var U = sim.step(I)
+    if U < U_min:
+      break
 
-proc charge(sim: Simulation, I: Current) =
-  sim.run_while(I, proc(cell: Cell): bool =
-    cell.U < 4.2
-  )
+proc charge(sim: Simulation, I: Current, U_max: Voltage) =
+  while true:
+    var U_pack = sim.step(I)
+    if U_pack > U_max:
+      break
+
+
+proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
+
+  var I_pack = I_set
+
+  # PID controller constants for voltage regulation
+  let pid_P = 5.0
+  let pid_I = 2.0
+  var err_int = 0.0
+
+  while true:
+
+    var U_pack = sim.step(I_pack)
+
+    let err = U_set - U_pack
+    err_int += err * sim.dt
+    err_int = clamp(err_int, -2.0, 2.0)
+  
+    I_pack = (pid_P * err) + (pid_I * err_int)
+    I_pack = clamp(I_pack, 0.0, I_set)
+
+    if I_pack < I_set * 0.05:
+      break
+    
 
 proc sleep(sim: Simulation, d: Duration) =
   let t_end = sim.time + d
-  sim.run_while(0.0, proc(cell: Cell): bool =
-    sim.time < t_end
-  )
+  while sim.time < t_end:
+    discard sim.step(0.0)
 
 
 var sim = newSimulation(5.0)
@@ -409,11 +418,15 @@ sim.pack = Pack(
 )
 
 
-for i in 0 ..< 200:
-  sim.cycle_number = i
-  sim.discharge(-8.0)
-  sim.sleep(1200)
-  sim.charge(+4.0)
-  sim.sleep(1200)
+# Fixed number of full cycles
+proc test1(sim: Simulation) = 
+  for i in 0 ..< 400:
+    sim.cycle_number = i
+    sim.discharge(-8.0, 3.0 * 2)
+    sim.sleep(1200)
+    sim.charge_CC_CV(+4.0, 4.2 * 2)
+    sim.sleep(1200)
 
+
+test1(sim)
 
