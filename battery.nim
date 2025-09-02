@@ -1,5 +1,5 @@
 
-import std/[sequtils, tables, strutils, math, times, options, os, strformat]
+import std/[sequtils, tables, strutils, math, times, options, os, strformat, random]
 
 type 
 
@@ -36,6 +36,7 @@ type
     n_SOH_50: float
     charge_eff: float
     peukert: float
+    R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
 
   CellModel = object
     U1: Voltage
@@ -66,6 +67,7 @@ type
     pack: Pack
     time: float
     dt: float
+    cycle_number: int
 
 
 proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
@@ -110,11 +112,20 @@ proc newCell(param: CellParam, idx: int): Cell =
   cell.T_ambient = 20.0
   cell.soc_lowpass = mk_lowpass(0.1)
 
-  cell.C -= float(idx) * 300.0
+  cell.C -= rand(0.0 .. 1000.0)
+  # cell.param.Q_bol *= rand(0.95 .. 1.05)
+  # cell.param.R0 *= rand(0.95 .. 1.05)
 
   let fname = fmt"/tmp/cell_{idx:02}.log"
   cell.fd_log = open(fname, fmWrite)
   return cell
+
+
+
+proc get_soh(cell: Cell): Soh =
+  let n_SOH_50 = cell.param.n_SOH_50 # this many cycles is soh 0.5
+  let cycles = cell.Q_total / cell.param.Q_bol
+  return 1.0 - 0.5 * (cycles / n_SOH_50)
 
 
 proc get_Q_effective(cell: Cell): Charge =
@@ -125,13 +136,7 @@ proc get_Q_effective(cell: Cell): Charge =
   if cell.I < 0:
     let I_ref = cell.param.Q_bol / 3600
     P_factor = pow(abs(cell.I) / I_ref, 1 - cell.param.peukert)
-  return cell.param.Q_bol * T_factor * P_factor
-
-
-proc get_soh(cell: Cell): Soh =
-  let n_SOH_50 = cell.param.n_SOH_50 # this many cycles is soh 0.5
-  let cycles = cell.Q_total / cell.param.Q_bol
-  return 1.0 - 0.5 * (cycles / n_SOH_50)
+  return cell.param.Q_bol * T_factor * P_factor * cell.get_soh()
 
 
 proc get_soc(cell: Cell): Soc =
@@ -198,7 +203,8 @@ proc update(cell: Cell, I: Current, dT: float) =
   var P_loss = 0.0
   var dC = I * dT
   if I > 0.0:
-    dC *= param.charge_eff
+    let dynamic_charge_eff = param.charge_eff - (cell.R * param.R_efficiency_factor)
+    dC *= dynamic_charge_eff
     P_loss = cell.U * I * (1.0 - param.charge_eff)
 
   cell.C += dC
@@ -230,7 +236,7 @@ let param = CellParam(
   Cth:   25.0,
   Rth:    5.0,
   Q_bol: Q_from_Ah(2.5),
-  n_SOH_50: 500,
+  n_SOH_50: 100,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
     3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
@@ -270,6 +276,7 @@ let param = CellParam(
   ],
   charge_eff: 0.96,
   peukert: 1.01,
+  R_efficiency_factor: 1.0,
 )
 
 
@@ -278,11 +285,10 @@ proc newSimulation(dT: float): Simulation =
   result.dt = dT
 
 
-proc report(cell: Cell, idx: int) =
-  let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
-  cell.fd_log.writeLine(line)
-  
-
+proc report(sim: Simulation, cell: Cell, idx: int) =
+  if sim.cycle_number mod 10 == 0:
+    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
+    cell.fd_log.writeLine(line)
 
 
 proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
@@ -292,11 +298,11 @@ proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
     for module in sim.pack.series:
       for cell in module.parallel:
         cell.update(I, sim.dt)
-        cell.report(i)
+        sim.report(cell, i)
         if not condition(cell):
           all_ok = false
     if not all_ok:
-      break
+          break
     sim.time += sim.dt
 
 
@@ -307,7 +313,7 @@ proc discharge(sim: Simulation, I: Current) =
 
 proc charge(sim: Simulation, I: Current) =
   sim.run_while(I, proc(cell: Cell): bool =
-    cell.get_soc() < 1.0
+    cell.U < 4.2
   )
 
 proc sleep(sim: Simulation, d: Duration) =
@@ -323,15 +329,24 @@ sim.pack = Pack(
     Module(
       parallel: @[
         newCell(param, 0),
-        newCell(param, 1),
-        newCell(param, 2)
       ]
-    )
+    ),
+    Module(
+      parallel: @[
+        newCell(param, 1),
+      ]
+    ),
+    Module(
+      parallel: @[
+        newCell(param, 2),
+      ]
+    ),
   ]
 )
 
 
-for i in 0 ..< 2:
+for i in 0 ..< 100:
+  sim.cycle_number = i
   sim.discharge(-8.0)
   sim.sleep(600)
   sim.charge(+4.0)
