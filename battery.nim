@@ -112,9 +112,10 @@ proc newCell(param: CellParam, idx: int): Cell =
   cell.T_ambient = 20.0
   cell.soc_lowpass = mk_lowpass(0.1)
 
-  cell.C -= rand(0.0 .. 1000.0)
-  # cell.param.Q_bol *= rand(0.95 .. 1.05)
-  # cell.param.R0 *= rand(0.95 .. 1.05)
+  # Deviations
+  cell.C *= rand(1.00 .. 1.00)
+  cell.param.Q_bol *= rand(1.00 .. 1.00)
+  cell.param.R0 *= rand(0.92 .. 1.00)
 
   let fname = fmt"/tmp/cell_{idx:02}.log"
   cell.fd_log = open(fname, fmWrite)
@@ -169,10 +170,16 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   let soc1 = float(idx) / (n - 1).float
   let soc2 = float(idx + 1) / (n - 1).float
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
-  
+
 
 proc update(cell: Cell, I: Current, dT: float) =
   let param = cell.param
+  var I = I
+
+  # Balancing: during charge, balance all cells > 3.6V
+  var I_balance = 0.0
+  if cell.U > 4.1:
+    I -= I_balance
 
   # Update the current in the cell
   cell.I = I
@@ -345,11 +352,11 @@ sim.pack = Pack(
 )
 
 
-for i in 0 ..< 100:
+for i in 0 ..< 200:
   sim.cycle_number = i
   sim.discharge(-8.0)
-  sim.sleep(600)
+  sim.sleep(1800)
   sim.charge(+4.0)
-  sim.sleep(600)
+  sim.sleep(1800)
 
 
