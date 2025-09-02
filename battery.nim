@@ -30,6 +30,7 @@ type
     temp_tab: Tab[Temperature, float]
     T_R_tab: Tab[Temperature, float]
     SOH_R_tab: Tab[Soh, float]
+    SOC_R_tab: Tab[Soc, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
     n_SOH_50: float
@@ -53,6 +54,7 @@ type
     U_ocv: Voltage
     U_ocv_prev: Voltage
     soc_lowpass: Lowpass
+    fd_log: File
     
   Module = object
     parallel: seq[Cell]
@@ -61,7 +63,6 @@ type
     series: seq[Module]
 
   Simulation = ref object
-    cells: seq[Cell]
     pack: Pack
     time: float
     dt: float
@@ -99,7 +100,7 @@ proc mk_lowpass(alpha: float): Lowpass =
       return lp
 
 
-proc newCell(param: CellParam): Cell =
+proc newCell(param: CellParam, idx: int): Cell =
   var cell = new Cell
   cell.param = param
   cell.model = CellModel()
@@ -108,6 +109,11 @@ proc newCell(param: CellParam): Cell =
   cell.T = 20.0
   cell.T_ambient = 20.0
   cell.soc_lowpass = mk_lowpass(0.1)
+
+  cell.C -= float(idx) * 300.0
+
+  let fname = fmt"/tmp/cell_{idx:02}.log"
+  cell.fd_log = open(fname, fmWrite)
   return cell
 
 
@@ -128,12 +134,22 @@ proc get_soh(cell: Cell): Soh =
   return 1.0 - 0.5 * (cycles / n_SOH_50)
 
 
+proc get_soc(cell: Cell): Soc =
+  let Q_effective = cell.get_Q_effective()
+  return (Q_effective + cell.C) / Q_effective
+
+
 proc T_to_R_factor(cell: Cell): float =
   return interpolate(cell.param.T_R_tab, cell.T)
 
 
 proc SOH_to_R_factor(cell: Cell): float =
   return interpolate(cell.param.SOH_R_tab, cell.get_soh())
+
+
+proc SOC_to_R_factor(cell: Cell): float =
+  let soc = cell.get_soc()
+  return interpolate(cell.param.SOC_R_tab, soc)
 
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
@@ -150,11 +166,6 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
   
 
-proc get_soc(cell: Cell): Soc =
-  let Q_effective = cell.get_Q_effective()
-  return (Q_effective + cell.C) / Q_effective
-
-
 proc update(cell: Cell, I: Current, dT: float) =
   let param = cell.param
 
@@ -162,7 +173,7 @@ proc update(cell: Cell, I: Current, dT: float) =
   cell.I = I
 
   # Resistance depends on temperature
-  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor()
+  let R_factor = cell.T_to_R_factor() * cell.SOH_to_R_factor() * cell.SOC_to_R_factor()
   let R0 = param.R0 * R_factor
   let R1 = param.R1 * R_factor
   let R2 = param.R2 * R_factor
@@ -247,6 +258,16 @@ let param = CellParam(
     (0.8, 1.05),
     (1.0, 1.0)
   ],
+  SOC_R_tab: @[
+    (0.0, 1.8),
+    (0.1, 1.3),
+    (0.2, 1.1),
+    (0.4, 1.0),
+    (0.6, 1.0),
+    (0.8, 1.15),
+    (0.9, 1.4),
+    (1.0, 1.9)
+  ],
   charge_eff: 0.96,
   peukert: 1.01,
 )
@@ -257,32 +278,32 @@ proc newSimulation(dT: float): Simulation =
   result.dt = dT
 
 
-proc add_cell(sim: Simulation, cell: Cell) =
-  sim.cells.add(cell)
-
-proc report(cell: Cell) =
-  echo fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
+proc report(cell: Cell, idx: int) =
+  let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
+  cell.fd_log.writeLine(line)
+  
 
 
 
 proc run_while(sim: Simulation, I: Current, condition: proc(cell: Cell): bool) =
   while true:
     var all_ok = true
-    for cell in sim.cells:
-      cell.update(I, sim.dt)
-      cell.report()
-      if not condition(cell):
-        all_ok = false
+    var i = 0
+    for module in sim.pack.series:
+      for cell in module.parallel:
+        cell.update(I, sim.dt)
+        cell.report(i)
+        if not condition(cell):
+          all_ok = false
     if not all_ok:
       break
     sim.time += sim.dt
 
 
 proc discharge(sim: Simulation, I: Current) =
-  discard
-  #sim.run_while(I, proc(cell: Cell): bool = 
-  #  cell.U > 2.5
-  #)
+  sim.run_while(I, proc(cell: Cell): bool = 
+    cell.U > 2.5
+  )
 
 proc charge(sim: Simulation, I: Current) =
   sim.run_while(I, proc(cell: Cell): bool =
@@ -291,11 +312,9 @@ proc charge(sim: Simulation, I: Current) =
 
 proc sleep(sim: Simulation, d: Duration) =
   let t_end = sim.time + d
-  while sim.time < t_end:
-    for cell in sim.cells:
-      cell.update(0.0, sim.dt)
-      cell.report()
-    sim.time += sim.dt
+  sim.run_while(0.0, proc(cell: Cell): bool =
+    sim.time < t_end
+  )
 
 
 var sim = newSimulation(5.0)
@@ -303,16 +322,16 @@ sim.pack = Pack(
   series: @[
     Module(
       parallel: @[
-        newCell(param),
-        newCell(param),
-        newCell(param)
+        newCell(param, 0),
+        newCell(param, 1),
+        newCell(param, 2)
       ]
     )
   ]
 )
 
 
-for i in 0 ..< 1:
+for i in 0 ..< 2:
   sim.discharge(-8.0)
   sim.sleep(600)
   sim.charge(+4.0)
