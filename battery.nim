@@ -48,6 +48,8 @@ type
     U2: Voltage
 
   Cell = ref object
+    id: int
+    sim: Simulation
     param: CellParam
     model: CellModel
     C: Charge # energy taken out
@@ -65,16 +67,24 @@ type
     
   Module = object
     I_balance: Current
-    parallel: seq[Cell]
+    cells: seq[Cell]
+
+  Balancer = object
+    I: Current
 
   Pack = object
-    series: seq[Module]
+    U_empty: Voltage
+    U_full: Voltage
+    modules: seq[Module]
+    balancer: Balancer
 
   Simulation = ref object
     pack: Pack
+    cells: seq[Cell]
     time: float
     dt: float
     cycle_number: int
+    report_every_n: int
 
 
 proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
@@ -110,31 +120,10 @@ proc mk_lowpass(alpha: float): Lowpass =
       return lp
 
 
-proc newCell(param: CellParam, idx: int): Cell =
-  var cell = new Cell
-  cell.param = param
-  cell.model = CellModel()
-  cell.C = 0.0
-  cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
-  cell.T = 20.0
-  cell.T_ambient = 20.0
-  cell.soc_lowpass = mk_lowpass(0.1)
-
-  # Deviations
-
-  cell.param.Q_bol *= rand(0.95 .. 1.00)
-  cell.param.R0 *= rand(0.95 .. 1.00)
-
-  let fname = fmt"/tmp/cell_{idx:02}.log"
-  cell.fd_log = open(fname, fmWrite)
-  return cell
-
-
 
 proc get_soh(cell: Cell): Soh =
-  let n_SOH_50 = cell.param.n_SOH_50 # this many cycles is soh 0.5
   let cycles = cell.Q_total / cell.param.Q_bol
-  return 1.0 - 0.5 * (cycles / n_SOH_50)
+  return 1.0 - 0.5 * (cycles / cell.param.n_SOH_50)
 
 
 proc get_Q_effective(cell: Cell): Charge =
@@ -242,15 +231,195 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   cell.U = cell.U_ocv + dU
 
 
+proc newCell(sim: Simulation, param: CellParam): Cell =
+  var cell = new Cell
+  cell.id = sim.cells.len()
+  cell.sim = sim
+  cell.param = param
+  cell.model = CellModel()
+  cell.C = 0.0
+  cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
+  cell.T = 20.0
+  cell.T_ambient = 20.0
+  cell.soc_lowpass = mk_lowpass(0.1)
+
+  # Deviations
+
+  #cell.C = rand(-500.0 .. 0.0)
+  #cell.param.Q_bol *= rand(0.9 .. 1.00)
+  #cell.param.R0 *= rand(0.95 .. 1.00)
+
+  let fname = fmt"/tmp/cell_{cell.id:02}.log"
+  cell.fd_log = open(fname, fmWrite)
+
+  # Run one step to initialize cell state
+  cell.update_R()
+  cell.update(0.0, 0.0)
+
+  sim.cells.add(cell)
+  return cell
+
+
+
+
+proc newSimulation(dt: Interval): Simulation =
+  result = new Simulation
+  result.dt = dt
+
+proc gen_gnuplot(sim: Simulation, fname: string) =
+  let fd = open(fname, fmWrite)
+  proc l(s: string) =
+    fd.write(s & "\n")
+
+  l("#!/usr/bin/gnuplot -p")
+  l("")
+  l("reset")
+  l("set grid")
+  l("set key off")
+  l("set multiplot layout 5, 1")
+  l("set lmargin at screen 0.08")
+  l("set noxtics")
+  l("# 0 margin between multiplots")
+  l("set tmargin 1")
+  l("set bmargin 1")
+
+  proc gen_graph(col: int, ylabel: string, pres: openArray[string]) =
+    var ts: seq[string]
+    for cell in sim.cells.mitems:
+      ts.add(&""" "/tmp/cell_{cell.id:02}.log" u {col} w l""")
+
+    l("")
+    for pre in pres:
+      l(pre)
+    l(&"""set ylabel "{ylabel}"""")
+    l(&"""plot {ts.join(", ")}""")
+
+  gen_graph(1, "I (A)",    [ "set yrange [-10:10]" ])
+  gen_graph(2, "U (V)",    [ "set yrange [2.4:4.3]" ])
+  gen_graph(3, "SOC (%)",  [ "set yrange [0.0:1.0]" ])
+  gen_graph(4, "T (°C)",   [ "unset yrange" ])
+  gen_graph(5, "SOH (%)",  [ "set yrange [-0.1:1.1]" ])
+
+  fd.write("unset multiplot\n")
+  fd.close()
+
+
+proc report(cell: Cell) =
+  if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
+    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
+    cell.fd_log.writeLine(line)
+
+
+proc balance(sim: Simulation, pack: var Pack) =
+  var U_min = 1e6
+  for module in pack.modules:
+    for cell in module.cells:
+      if cell.U < U_min:
+        U_min = cell.U
+  for module in pack.modules.mitems:
+    var I_balance = 0.0
+    for cell in module.cells:
+      let dU = cell.U - U_min
+      if dU > 0.01:
+        I_balance -= pack.balancer.I
+    module.I_balance = I_balance
+
+
+proc step(sim: Simulation, I_pack: Current): Voltage =
+
+  sim.balance(sim.pack)
+
+  var i = 0
+
+  for module in sim.pack.modules:
+   
+    # Current in the module is pack current + balancing current
+    let I_module = I_pack + module.I_balance
+
+    var sum_U_div_R = 0.0
+    var sum_1_div_R = 0.0
+
+    # Calculate parallel resistance of all cells in the module
+    for cell in module.cells:
+      cell.update_R()
+
+      sum_U_div_R += cell.U_src / cell.model.R0
+      sum_1_div_R += 1.0 / cell.model.R0
+
+    let U_module = (I_module + sum_U_div_R) / sum_1_div_R
+    result += U_module
+
+    for cell in module.cells:
+      cell.report()
+      inc i
+      let I_cell = (U_module - cell.U_src) / cell.model.R0
+      cell.update(I_cell, sim.dt)
+        
+  sim.time += sim.dt
+
+
+proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam): Pack =
+  result = Pack()
+  for i in 0 ..< n_series:
+    var module = Module()
+    for j in 0 ..< n_parallel:
+      module.cells.add(sim.newCell(param))
+    result.modules.add(module)
+  result.U_empty = n_series.float * 2.50
+  result.U_full = n_series.float * 4.20
+
+
+proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
+  while true:
+    var U = sim.step(I)
+    if U < U_min:
+      return
+    for cell in sim.cells:
+      if cell.U < 2.5:
+        return
+
+proc charge(sim: Simulation, I: Current, U_max: Voltage) =
+  while true:
+    var U_pack = sim.step(I)
+    if U_pack > U_max:
+      break
+
+
+proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
+
+  var I_pack = I_set
+
+  # PID controller constants for voltage regulation
+  let pid_P = 5.0
+  let pid_I = 2.0
+  var err_int = 0.0
+
+  while I_pack > I_set * 0.05:
+
+    var U_pack = sim.step(clamp(I_pack, 0.0, I_set))
+
+    let err = U_set - U_pack
+    if I_pack > 0.0 and I_pack < I_set:
+      err_int += err * sim.dt
+      err_int = clamp(err_int, -2.0, 2.0)
+  
+    I_pack = (pid_P * err) + (pid_I * err_int)
+    
+
+proc sleep(sim: Simulation, d: Duration) =
+  let t_end = sim.time + d
+  while sim.time < t_end:
+    discard sim.step(0.0)
+
 
 let param = CellParam(
   R0:     0.03,
   R1:     0.02,
   R2:     0.01,
-  C1:  3000.0,
-  C2: 25000.0,
-  Cth:   25.0,
-  Rth:    5.0,
+  C1:  3000.00,
+  C2: 25000.00,
+  Cth:   25.00,
+  Rth:    5.00,
   Q_bol: Q_from_Ah(2.5),
   n_SOH_50: 800,
   soc_tab: @[
@@ -259,7 +428,7 @@ let param = CellParam(
     3.594, 3.615, 3.638, 3.659, 3.679, 3.700, 3.722, 3.744, 3.766, 3.786,
     3.805, 3.823, 3.839, 3.855, 3.873, 3.893, 3.913, 3.932, 3.953, 3.977,
     4.005, 4.032, 4.055, 4.072, 4.081, 4.086, 4.090, 4.094, 4.100, 4.120,
-    4.150, 4.200
+    4.150, 4.200, 4.250
   ],
   temp_tab: @[
     (-20.0, 0.4),
@@ -296,137 +465,32 @@ let param = CellParam(
 )
 
 
-proc newSimulation(dt: Interval): Simulation =
-  result = new Simulation
-  result.dt = dt
+
+proc test1(sim: Simulation) =
+  sim.sleep(600)
+  sim.discharge(-8.0, sim.pack.U_empty)
+  sim.sleep(1200)
+  sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  sim.sleep(600)
+
+proc test2(sim: Simulation) =
+  sim.sleep(3600)
 
 
-proc report(sim: Simulation, cell: Cell, idx: int) =
-  if sim.cycle_number mod 10 == 0:
-    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
-    cell.fd_log.writeLine(line)
-
-
-proc balance(sim: Simulation, pack: var Pack) =
-  var U_min = 1e6
-  for module in pack.series:
-    for cell in module.parallel:
-      if cell.U < U_min:
-        U_min = cell.U
-  for module in pack.series.mitems:
-    var I_balance = 0.0
-    for cell in module.parallel:
-      let dU = cell.U - U_min
-      if dU > 0.01:
-        I_balance += -0.100
-    module.I_balance = I_balance
-
-
-proc step(sim: Simulation, I_pack: Current): Voltage =
-
-  #sim.balance(sim.pack)
-
-  var i = 0
-
-  for module in sim.pack.series:
-   
-    # Current in the module is pack current + balancing current
-    let I_module = I_pack + module.I_balance
-
-    var sum_U_div_R = 0.0
-    var sum_1_div_R = 0.0
-
-    # Calculate parallel resistance of all cells in the module
-    var Rinv = 0.0
-    for cell in module.parallel:
-      cell.update_R()
-
-      sum_U_div_R += cell.U_src / cell.model.R0
-      sum_1_div_R += 1.0 / cell.model.R0
-
-    let U_module = (I_module + sum_U_div_R) / sum_1_div_R
-    result += U_module
-
-    for cell in module.parallel:
-      sim.report(cell, i)
-      inc i
-      let I_cell = (U_module - cell.U_src) / cell.model.R0
-      cell.update(I_cell, sim.dt)
-        
-    sim.time += sim.dt
-
-
-proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
-  while true:
-    var U = sim.step(I)
-    if U < U_min:
-      break
-
-proc charge(sim: Simulation, I: Current, U_max: Voltage) =
-  while true:
-    var U_pack = sim.step(I)
-    if U_pack > U_max:
-      break
-
-
-proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
-
-  var I_pack = I_set
-
-  # PID controller constants for voltage regulation
-  let pid_P = 5.0
-  let pid_I = 2.0
-  var err_int = 0.0
-
-  while true:
-
-    var U_pack = sim.step(I_pack)
-
-    let err = U_set - U_pack
-    err_int += err * sim.dt
-    err_int = clamp(err_int, -2.0, 2.0)
-  
-    I_pack = (pid_P * err) + (pid_I * err_int)
-    I_pack = clamp(I_pack, 0.0, I_set)
-
-    if I_pack < I_set * 0.05:
-      break
-    
-
-proc sleep(sim: Simulation, d: Duration) =
-  let t_end = sim.time + d
-  while sim.time < t_end:
-    discard sim.step(0.0)
+proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5) =
+  sim.report_every_n = max(1, count div n_report)
+  for i in 0 ..< count:
+    sim.cycle_number = i
+    fn(sim)
 
 
 var sim = newSimulation(5.0)
-sim.pack = Pack(
-  series: @[
-    Module(
-      parallel: @[
-        newCell(param, 0),
-        newCell(param, 1),
-      ]
-    ),
-    Module(
-      parallel: @[
-        newCell(param, 2),
-        newCell(param, 3),
-      ]
-    ),
-  ]
-)
+sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
+sim.pack.balancer.I = 0.100
 
+sim.cells[0].param.R0 *= 1.1
+sim.cells[0].param.R0 *= 1.1
 
-# Fixed number of full cycles
-proc test1(sim: Simulation) = 
-  for i in 0 ..< 400:
-    sim.cycle_number = i
-    sim.discharge(-8.0, 3.0 * 2)
-    sim.sleep(1200)
-    sim.charge_CC_CV(+4.0, 4.2 * 2)
-    sim.sleep(1200)
-
-
-test1(sim)
+sim.gen_gnuplot("view.gp")
+sim.run(test1, count=400, n_report=3)
 
