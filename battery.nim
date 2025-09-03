@@ -20,6 +20,10 @@ type
 
   Tab[A, B] = seq[(A, B)]
 
+  ArrheniusParam = object
+    A: float # pre-exponential factor, 1/s
+    Ea: float # activation energy, J/mol
+
   CellParam = object
     R0: Resistance
     R1: Resistance
@@ -27,17 +31,22 @@ type
     C1: Capacitance
     C2: Capacitance
     Q_bol: Charge
+    I_leak_20: Current
     soc_tab: SocTab
     temp_tab: Tab[Temperature, float]
     T_R_tab: Tab[Temperature, float]
     SOH_R_tab: Tab[Soh, float]
     SOC_R_tab: Tab[Soc, float]
+    SOC_stress_Tab: Tab[Soc, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
     n_SOH_50: float
     charge_eff: float
     peukert: float
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
+    ap_static: ArrheniusParam # calendar aging
+    ap_stress: ArrheniusParam # cycling aging
+
 
   CellModel = object
     R0: Resistance
@@ -61,8 +70,9 @@ type
     U: Voltage
     U_ocv: Voltage
     U_src: Voltage
-    soc_lowpass: Lowpass
     fd_log: File
+    soh: Soh
+    dsoh: float
 
   Module = object
     I_balance: Current
@@ -106,25 +116,6 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
     raise newException(ValueError, "Interpolation failed")
 
 
-proc mk_lowpass(alpha: float): Lowpass =
-  var first = true
-  var lp = 0.0
-  return proc(value: float): float =
-    if first:
-      first = false
-      lp = value
-      return value
-    else:
-      lp = (1.0-alpha) * lp + (alpha) * value
-      return lp
-
-
-
-proc get_soh(cell: Cell): Soh =
-  let cycles = cell.Q_total / cell.param.Q_bol
-  return 1.0 - 0.5 * (cycles / cell.param.n_SOH_50)
-
-
 proc get_Q_effective(cell: Cell): Charge =
   # Temperature factor
   let T_factor = interpolate(cell.param.temp_tab, cell.T)
@@ -133,7 +124,7 @@ proc get_Q_effective(cell: Cell): Charge =
   let I_ref = cell.param.Q_bol / 3600
   if cell.I < -I_ref:
     P_factor = pow(abs(cell.I) / I_ref, 1 - cell.param.peukert)
-  return cell.param.Q_bol * T_factor * P_factor * cell.get_soh()
+  return cell.param.Q_bol * T_factor * P_factor * cell.soh
 
 
 proc get_soc(cell: Cell): Soc =
@@ -146,7 +137,7 @@ proc T_to_R_factor(cell: Cell): float =
 
 
 proc SOH_to_R_factor(cell: Cell): float =
-  return interpolate(cell.param.SOH_R_tab, cell.get_soh())
+  return interpolate(cell.param.SOH_R_tab, cell.soh)
 
 
 proc SOC_to_R_factor(cell: Cell): float =
@@ -177,9 +168,38 @@ proc update_R(cell: Cell) =
 
   cell.model.R0 = param.R0 * T_factor * SOH_factor
   cell.model.R1 = param.R1 * T_factor * SOC_factor * SOH_factor
-  cell.model.R2 = param.R2 * SOC_factor * SOH_factor
+  cell.model.R2 = param.R2 * T_factor * SOC_factor * SOH_factor
   cell.R = cell.model.R0 + cell.model.R1 + cell.model.R2
 
+
+
+proc update_soh(cell: Cell, dt: Interval) =
+  let param = cell.param
+
+  # Arrhenius equation to calculate a degradation factor based on the cell's
+  # current temperature
+  proc arrhenius(ap: ArrheniusParam, T: Temperature): float =
+    return ap.A * exp(-ap.Ea / (8.314 * (T + 273.15)))
+
+  cell.dsoh = 0.0
+
+  # 'static' calendar aging
+  cell.dsoh += -arrhenius(param.ap_static, cell.T)
+
+  # 'stress' aging due to cycling
+  let dC = abs(cell.I) * dt
+  if dC > 0:
+    # Stress factors: power, SOC window
+    let I_nominal = cell.param.Q_bol / 3600
+    let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
+    let soc_stress = interpolate(param.SOC_stress_Tab, cell.get_soc())
+    let degradation_rate = arrhenius(param.ap_stress, cell.T)
+    cell.dsoh += -degradation_rate * power_stress * soc_stress
+  
+  cell.soh += cell.dsoh * dt
+
+  if cell.soh <= 0.0:
+    raise newException(ValueError, "Cell SOH dropped to zero")
 
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
@@ -210,6 +230,10 @@ proc update(cell: Cell, I: Current, dt: Interval) =
     dC *= dynamic_charge_eff
     P_loss = cell.U * I * (1.0 - param.charge_eff)
 
+  # Calculate leak current; given current is at 20°C, adjust for temperature
+  let I_leak = param.I_leak_20 * pow(2, (cell.T - 20.0) / 10.0)
+  dC += I_leak * dt
+
   cell.C += dC
   #cell.C = cell.C.clamp(-param.Q_bol - 100, 100.0)
   cell.Q_total += abs(dC)
@@ -222,8 +246,11 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dt / param.Cth
 
+  # Update state of health
+  cell.update_soh(dt)
+
   # Get OCV from SOC
-  let soc = cell.soc_lowpass(cell.get_soc())
+  let soc = cell.get_soc()
   cell.U_ocv = SOC_to_U(param, soc)
   cell.U_src = cell.U_ocv + cell.model.U1 + cell.model.U2
   cell.U = cell.U_ocv + dU
@@ -239,11 +266,10 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
   cell.T = 20.0
   cell.T_ambient = 20.0
-  cell.soc_lowpass = mk_lowpass(0.1)
+  cell.soh = 1.0
 
   # Deviations
 
-  #cell.C = rand(-500.0 .. 0.0)
   #cell.param.Q_bol *= rand(0.9 .. 1.00)
   #cell.param.R0 *= rand(0.95 .. 1.00)
 
@@ -274,12 +300,13 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   l("reset")
   l("set grid")
   l("set key off")
-  l("set multiplot layout 5, 1")
+  l("set multiplot layout 6, 1")
   l("set lmargin at screen 0.08")
   l("set noxtics")
   l("# 0 margin between multiplots")
   l("set tmargin 1")
   l("set bmargin 1")
+  l("set offsets graph 0, 0, 0.05, 0.05")
 
   proc gen_graph(col: int, ylabel: string, pres: openArray[string]) =
     var ts: seq[string]
@@ -292,11 +319,12 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
     l(&"""set ylabel "{ylabel}"""")
     l(&"""plot {ts.join(", ")}""")
 
-  gen_graph(1, "I (A)",    [ "set yrange [-10:10]" ])
-  gen_graph(2, "U (V)",    [ "set yrange [2.4:4.3]" ])
-  gen_graph(3, "SOC (%)",  [ "set yrange [0.0:1.0]" ])
+  gen_graph(1, "I (A)",    [ "unset yrange" ])
+  gen_graph(2, "U (V)",    [ "set yrange [2.3:4.3]" ])
+  gen_graph(3, "SOC (%)",  [ "set yrange [-0.1:1.1]" ])
   gen_graph(4, "T (°C)",   [ "unset yrange" ])
   gen_graph(5, "SOH (%)",  [ "set yrange [-0.1:1.1]" ])
+  gen_graph(6, "dSOH",     [ "unset yrange" ])
 
   fd.write("unset multiplot\n")
   fd.close()
@@ -304,7 +332,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 proc report(cell: Cell) =
   if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
-    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.get_soh():>4.2f}"
+    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
 
 
@@ -340,7 +368,6 @@ proc step(sim: Simulation, I_pack: Current): Voltage =
     # Calculate parallel resistance of all cells in the module
     for cell in module.cells:
       cell.update_R()
-
       sum_U_div_R += cell.U_src / cell.model.R0
       sum_1_div_R += 1.0 / cell.model.R0
 
@@ -388,7 +415,7 @@ proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
   var I_pack = I_set
 
   # PID controller constants for voltage regulation
-  let pid_P = 5.0
+  let pid_P = 1.0
   let pid_I = 2.0
   var err_int = 0.0
 
@@ -419,7 +446,8 @@ let param = CellParam(
   Cth:   25.00,
   Rth:    5.00,
   Q_bol: Q_from_Ah(2.5),
-  n_SOH_50: 800,
+  I_leak_20: -1.4e-3,
+  n_SOH_50: 500,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
     3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
@@ -457,23 +485,41 @@ let param = CellParam(
     (0.9, 1.4),
     (1.0, 1.9)
   ],
+  SOC_stress_Tab: @[
+    (0.0, 3.0),
+    (0.1, 1.5),
+    (0.2, 1.0),
+    (0.4, 1.0),
+    (0.6, 1.0),
+    (0.8, 1.0),
+    (0.9, 1.5),
+    (1.0, 3.0)
+  ],
   charge_eff: 0.96,
   peukert: 1.01,
   R_efficiency_factor: 5.0,
+  ap_static: ArrheniusParam(
+    A: 250.0,
+    Ea: 55.0e3,
+  ),
+  ap_stress: ArrheniusParam(
+    A: 1250,
+    Ea: 54.0e3,
+  )
 )
 
 
 
 proc test1(sim: Simulation) =
   sim.sleep(600)
-  sim.discharge(-8.0, 6.0)
+  sim.discharge(-8.0, sim.pack.U_empty)
   sim.sleep(1200)
-  sim.charge(+4.0, sim.pack.U_full)
-  #sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  #sim.charge(+4.0, sim.pack.U_full)
+  sim.charge_CC_CV(+4.0, sim.pack.U_full)
   sim.sleep(600)
 
 proc test2(sim: Simulation) =
-  sim.sleep(3600)
+  sim.sleep(4 * 3600)
 
 
 proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5) =
@@ -481,15 +527,20 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   for i in 0 ..< count:
     sim.cycle_number = i
     fn(sim)
+  let t = sim.time.int
+  let days = t div 86400
+  let hours = (t mod 86400) div 3600
+  let minutes = (t mod 3600) div 60
+  echo fmt"Completed {count} cycles, total time {days}d {hours}h {minutes}m"
 
 
 var sim = newSimulation(5.0)
-sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
-sim.pack.balancer.I = 0.100
+sim.pack = sim.newPack(n_series=3, n_parallel=2, param)
+sim.pack.balancer.I = 0.200
 
-sim.cells[0].param.R0 *= 1.1
-sim.cells[1].param.R0 *= 1.1
+sim.cells[0].param.R0 *= 1.2
+sim.cells[0].param.Q_bol *= 0.9
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=100, n_report=20)
+sim.run(test1, count=500, n_report=5)
 
