@@ -466,9 +466,10 @@ let param = CellParam(
 
 proc test1(sim: Simulation) =
   sim.sleep(600)
-  sim.discharge(-8.0, sim.pack.U_empty)
+  sim.discharge(-8.0, 6.0)
   sim.sleep(1200)
-  sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  sim.charge(+4.0, sim.pack.U_full)
+  #sim.charge_CC_CV(+4.0, sim.pack.U_full)
   sim.sleep(600)
 
 proc test2(sim: Simulation) =
@@ -487,8 +488,8 @@ sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
 sim.pack.balancer.I = 0.100
 
 sim.cells[0].param.R0 *= 1.1
-sim.cells[0].param.R0 *= 1.1
+sim.cells[1].param.R0 *= 1.1
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=400, n_report=3)
+sim.run(test1, count=100, n_report=20)
 
