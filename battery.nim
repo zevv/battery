@@ -25,6 +25,8 @@ type
     Ea: float # activation energy, J/mol
 
   CellParam = object
+    vendor: string
+    model: string
     R0: Resistance
     R1: Resistance
     R2: Resistance
@@ -40,7 +42,6 @@ type
     SOC_stress_Tab: Tab[Soc, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
-    n_SOH_50: float
     charge_eff: float
     peukert: float
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
@@ -67,6 +68,7 @@ type
     T_ambient: Temperature
     T: Temperature
     I: Current
+    I_peukert: Current
     U: Voltage
     U_ocv: Voltage
     U_src: Voltage
@@ -121,9 +123,9 @@ proc get_Q_effective(cell: Cell): Charge =
   let T_factor = interpolate(cell.param.temp_tab, cell.T)
   # Peukert factor
   var P_factor = 1.0
-  let I_ref = cell.param.Q_bol / 3600
-  if cell.I < -I_ref:
-    P_factor = pow(abs(cell.I) / I_ref, 1 - cell.param.peukert)
+  let I_ref = 0.2 * cell.param.Q_bol / 3600
+  if cell.I_peukert < -I_ref:
+    P_factor = pow(abs(cell.I_peukert) / I_ref, 1 - cell.param.peukert)
   return cell.param.Q_bol * T_factor * P_factor * cell.soh
 
 
@@ -204,8 +206,10 @@ proc update_soh(cell: Cell, dt: Interval) =
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
 
-  # Update the current in the cell
+  # Update the current in the cell. For the peukert calculation
+  # a lowpass filter is used to smooth out short current spikes.
   cell.I = I
+  cell.I_peukert = (cell.I_peukert * 0.9) + (I * 0.1)
 
   # Update the equivalent circuit model to calculate dU
   cell.model.U0 = I * cell.model.R0
@@ -268,11 +272,6 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.T_ambient = 20.0
   cell.soh = 1.0
 
-  # Deviations
-
-  #cell.param.Q_bol *= rand(0.9 .. 1.00)
-  #cell.param.R0 *= rand(0.95 .. 1.00)
-
   let fname = fmt"/tmp/cell_{cell.id:02}.log"
   cell.fd_log = open(fname, fmWrite)
 
@@ -281,14 +280,18 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.update(0.0, 0.0)
 
   sim.cells.add(cell)
+
+  # Deviations
+  cell.param.Q_bol *= rand(0.9 .. 1.00)
+  cell.param.R0 *= rand(0.95 .. 1.00)
+
   return cell
-
-
 
 
 proc newSimulation(dt: Interval): Simulation =
   result = new Simulation
   result.dt = dt
+
 
 proc gen_gnuplot(sim: Simulation, fname: string) =
   let fd = open(fname, fmWrite)
@@ -300,9 +303,9 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   l("reset")
   l("set grid")
   l("set key off")
-  l("set multiplot layout 6, 1")
+  l("set multiplot layout 5, 1")
   l("set lmargin at screen 0.08")
-  l("set noxtics")
+  #l("set noxtics")
   l("# 0 margin between multiplots")
   l("set tmargin 1")
   l("set bmargin 1")
@@ -324,7 +327,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   gen_graph(3, "SOC (%)",  [ "set yrange [-0.1:1.1]" ])
   gen_graph(4, "T (°C)",   [ "unset yrange" ])
   gen_graph(5, "SOH (%)",  [ "set yrange [-0.1:1.1]" ])
-  gen_graph(6, "dSOH",     [ "unset yrange" ])
+  #gen_graph(6, "dSOH",     [ "unset yrange" ])
 
   fd.write("unset multiplot\n")
   fd.close()
@@ -415,7 +418,7 @@ proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
   var I_pack = I_set
 
   # PID controller constants for voltage regulation
-  let pid_P = 1.0
+  let pid_P = 0.3
   let pid_I = 2.0
   var err_int = 0.0
 
@@ -437,17 +440,19 @@ proc sleep(sim: Simulation, d: Duration) =
     discard sim.step(0.0)
 
 
+
 let param = CellParam(
-  R0:     0.03,
-  R1:     0.02,
-  R2:     0.01,
-  C1:  3000.00,
-  C2: 25000.00,
+  vendor: "Samsung",
+  model:  "INR18650-32E",
+  R0:     0.025,
+  R1:     0.015,
+  R2:     0.010,
+  C1:  4000.00,
+  C2: 30000.00,
   Cth:   25.00,
   Rth:    5.00,
-  Q_bol: Q_from_Ah(2.5),
+  Q_bol: Q_from_Ah(3.2),
   I_leak_20: -1.4e-3,
-  n_SOH_50: 500,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
     3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
@@ -457,15 +462,16 @@ let param = CellParam(
     4.150, 4.200, 4.250
   ],
   temp_tab: @[
-    (-20.0, 0.4),
-    (-10.0, 0.5),
-    (  0.0, 0.7),
-    ( 20.0, 1.0),
+    (-20.0, 0.60),
+    (-10.0, 0.75),
+    (  0.0, 0.88),
+    ( 25.0, 1.00),
+    ( 40.0, 1.02)
   ],
   T_R_tab: @[
-    (-20.0, 1.5),
-    (  0.0, 1.2),
-    ( 20.0, 1.0)
+    (-20.0, 3.0),
+    (  0.0, 1.8),
+    ( 25.0, 1.0)
   ],
   SOH_R_tab: @[
     (0.0, 1.5),
@@ -496,14 +502,14 @@ let param = CellParam(
     (1.0, 3.0)
   ],
   charge_eff: 0.96,
-  peukert: 1.01,
+  peukert: 1.03,
   R_efficiency_factor: 5.0,
   ap_static: ArrheniusParam(
-    A: 250.0,
+    A: 200.0,
     Ea: 55.0e3,
   ),
   ap_stress: ArrheniusParam(
-    A: 1250,
+    A: 300,
     Ea: 54.0e3,
   )
 )
@@ -522,6 +528,48 @@ proc test2(sim: Simulation) =
   sim.sleep(4 * 3600)
 
 
+proc test3(sim: Simulation) =
+  proc drive(sim: Simulation, I: Current, d: Duration) =
+    let t_end = sim.time + d
+    while sim.time < t_end:
+      discard sim.step(I)
+  proc commute() =
+    var commute_time_remaining = 40 * 60.0
+    for i in 1..5:
+      let drive_t = rand(45.0 .. 90.0)
+      let drive_I = rand(-5.0 .. -3.0)
+      sim.drive(drive_I, drive_t)
+      commute_time_remaining -= drive_t
+      let stop_t = rand(15.0 .. 45.0)
+      sim.drive(rand(0.2 .. 0.5), stop_t)
+      commute_time_remaining -= stop_t
+    let highway_t = 15.0 * 60.0
+    sim.drive(-8.0, highway_t)
+    commute_time_remaining -= highway_t
+    sim.drive(-4.0, 2 * 60)
+    commute_time_remaining -= 2 * 60
+    sim.drive(2.0, 30)
+    commute_time_remaining -= 30
+    sim.drive(0.0, commute_time_remaining)
+  sim.sleep(6 * 3600)
+  echo "--- Morning Commute ---"
+  commute()
+  echo "--- Parking at Work (8h 20m) ---"
+  sim.sleep(8 * 3600 + 20 * 60)
+  echo "--- Afternoon Commute ---"
+  commute()
+  echo "--- Parking at Home (1h 20m) ---"
+  sim.sleep(1 * 3600 + 20 * 60)
+  echo "--- Evening Charge ---"
+  sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  echo "--- Overnight Rest ---"
+  let total_cycle_duration = 24.0 * 3600.0
+  let time_into_this_cycle = sim.time mod total_cycle_duration
+  let remaining_time = total_cycle_duration - time_into_this_cycle
+  if remaining_time > 0:
+    sim.sleep(remaining_time)
+
+
 proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5) =
   sim.report_every_n = max(1, count div n_report)
   for i in 0 ..< count:
@@ -532,14 +580,15 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   let hours = (t mod 86400) div 3600
   let minutes = (t mod 3600) div 60
   echo fmt"Completed {count} cycles, total time {days}d {hours}h {minutes}m"
+  echo fmt"SOH range: {sim.cells.mapIt(it.soh).min:.3f} .. {sim.cells.mapIt(it.soh).max:.3f}"
 
 
 var sim = newSimulation(5.0)
-sim.pack = sim.newPack(n_series=3, n_parallel=2, param)
+sim.pack = sim.newPack(n_series=4, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
-sim.cells[0].param.R0 *= 1.2
-sim.cells[0].param.Q_bol *= 0.9
+#sim.cells[0].param.R0 *= 1.2
+#sim.cells[0].param.Q_bol *= 0.9
 
 sim.gen_gnuplot("view.gp")
 sim.run(test1, count=500, n_report=5)
