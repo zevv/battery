@@ -61,10 +61,9 @@ type
     U: Voltage
     U_ocv: Voltage
     U_src: Voltage
-    U_ocv_prev: Voltage
     soc_lowpass: Lowpass
     fd_log: File
-    
+
   Module = object
     I_balance: Current
     cells: seq[Cell]
@@ -225,7 +224,6 @@ proc update(cell: Cell, I: Current, dt: Interval) =
 
   # Get OCV from SOC
   let soc = cell.soc_lowpass(cell.get_soc())
-  cell.U_ocv_prev = cell.U_ocv
   cell.U_ocv = SOC_to_U(param, soc)
   cell.U_src = cell.U_ocv + cell.model.U1 + cell.model.U2
   cell.U = cell.U_ocv + dU
