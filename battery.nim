@@ -1,5 +1,5 @@
 
-import std/[sequtils, tables, strutils, math, times, options, os, strformat, random]
+import std/[sequtils, tables, strutils, math, times, options, os, strformat, random, algorithm]
 
 type 
 
@@ -68,10 +68,9 @@ type
     T_ambient: Temperature
     T: Temperature
     I: Current
-    I_peukert: Current
-    U: Voltage
-    U_ocv: Voltage
-    U_src: Voltage
+    I_lowpass: Current
+    U: Voltage # terminal voltage
+    U_src: Voltage # source voltage (without R0 drop)
     fd_log: File
     soh: Soh
     dsoh: float
@@ -101,21 +100,21 @@ type
 proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
 proc Q_to_Ah(Q: Charge): float = return Q / 3600.0
 
+
 proc interpolate[A, B](tab: Tab[A, B], x: A): B =
   let n = len(tab)
   if x <= tab[0][0]:
     return tab[0][1]
-  elif x >= tab[n - 1][0]:
+  if x >= tab[n - 1][0]:
     return tab[n - 1][1]
-  else:
-    for i in 0 ..< n - 1:
-      if tab[i][0] <= x and x <= tab[i + 1][0]:
-        let f1 = tab[i][1]
-        let f2 = tab[i + 1][1]
-        let x1 = tab[i][0]
-        let x2 = tab[i + 1][0]
-        return f1 + (f2 - f1) * (x - x1) / (x2 - x1)
-    raise newException(ValueError, "Interpolation failed")
+  for i in 0 ..< n - 1:
+    if tab[i][0] <= x and x <= tab[i + 1][0]:
+      let f1 = tab[i][1]
+      let f2 = tab[i + 1][1]
+      let x1 = tab[i][0]
+      let x2 = tab[i + 1][0]
+      return f1 + (f2 - f1) * (x - x1) / (x2 - x1)
+  raise newException(ValueError, "Interpolation failed")
 
 
 proc get_Q_effective(cell: Cell): Charge =
@@ -124,8 +123,8 @@ proc get_Q_effective(cell: Cell): Charge =
   # Peukert factor
   var P_factor = 1.0
   let I_ref = 0.2 * cell.param.Q_bol / 3600
-  if cell.I_peukert < -I_ref:
-    P_factor = pow(abs(cell.I_peukert) / I_ref, 1 - cell.param.peukert)
+  if cell.I_lowpass < -I_ref:
+    P_factor = pow(abs(cell.I_lowpass) / I_ref, 1 - cell.param.peukert)
   return cell.param.Q_bol * T_factor * P_factor * cell.soh
 
 
@@ -174,7 +173,6 @@ proc update_R(cell: Cell) =
   cell.R = cell.model.R0 + cell.model.R1 + cell.model.R2
 
 
-
 proc update_soh(cell: Cell, dt: Interval) =
   let param = cell.param
 
@@ -203,13 +201,15 @@ proc update_soh(cell: Cell, dt: Interval) =
   if cell.soh <= 0.0:
     raise newException(ValueError, "Cell SOH dropped to zero")
 
+
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
 
-  # Update the current in the cell. For the peukert calculation
-  # a lowpass filter is used to smooth out short current spikes.
+  # Update the current in the cell. For the peukert calculation a lowpass
+  # filter is used to smooth out short current spikes which can lead to
+  # numerical instabilties in parallel cell configurations.
   cell.I = I
-  cell.I_peukert = (cell.I_peukert * 0.9) + (I * 0.1)
+  cell.I_lowpass = (cell.I_lowpass * 0.9) + (I * 0.1)
 
   # Update the equivalent circuit model to calculate dU
   cell.model.U0 = I * cell.model.R0
@@ -224,29 +224,26 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   let I_C2 = I - I_R2
   cell.model.U2 += dt * I_C2 / param.C2
 
-  let dU = cell.model.U0 + cell.model.U1 + cell.model.U2
-
   # Update the cell charge, taking into account the charge efficiency
-  var P_loss = 0.0
   var dC = I * dt
   if I > 0.0:
     let dynamic_charge_eff = param.charge_eff - (cell.R * param.R_efficiency_factor)
     dC *= dynamic_charge_eff
-    P_loss = cell.U * I * (1.0 - param.charge_eff)
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
   let I_leak = param.I_leak_20 * pow(2, (cell.T - 20.0) / 10.0)
   dC += I_leak * dt
 
   cell.C += dC
-  #cell.C = cell.C.clamp(-param.Q_bol - 100, 100.0)
   cell.Q_total += abs(dC)
 
   # Update cell temperature
   let P_R0 = I * I * cell.model.R0
   let P_R1 = I_R1 * I_R1 * cell.model.R1
   let P_R2 = I_R2 * I_R2 * cell.model.R2
-  let P_dis = P_R0 + P_R1 + P_R2 + P_loss
+  let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
+  let P_leak = abs(I_leak) * cell.U
+  let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak
   let P_env = (cell.T - cell.T_ambient) / param.Rth
   cell.T += (P_dis - P_env) * dt / param.Cth
 
@@ -255,9 +252,9 @@ proc update(cell: Cell, I: Current, dt: Interval) =
 
   # Get OCV from SOC
   let soc = cell.get_soc()
-  cell.U_ocv = SOC_to_U(param, soc)
-  cell.U_src = cell.U_ocv + cell.model.U1 + cell.model.U2
-  cell.U = cell.U_ocv + dU
+  let U_ocv = SOC_to_U(param, soc)
+  cell.U_src = U_ocv + cell.model.U1 + cell.model.U2
+  cell.U = U_ocv + cell.model.U0 + cell.model.U1 + cell.model.U2
 
 
 proc newCell(sim: Simulation, param: CellParam): Cell =
@@ -323,7 +320,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
     l(&"""plot {ts.join(", ")}""")
 
   gen_graph(1, "I (A)",    [ "unset yrange" ])
-  gen_graph(2, "U (V)",    [ "set yrange [2.3:4.3]" ])
+  gen_graph(2, "U (V)",    [ "set yrange [2.3:4.4]" ])
   gen_graph(3, "SOC (%)",  [ "set yrange [-0.1:1.1]" ])
   gen_graph(4, "T (°C)",   [ "unset yrange" ])
   gen_graph(5, "SOH (%)",  [ "set yrange [-0.1:1.1]" ])
@@ -414,24 +411,26 @@ proc charge(sim: Simulation, I: Current, U_max: Voltage) =
 
 
 proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
-
-  var I_pack = I_set
-
+  
   # PID controller constants for voltage regulation
-  let pid_P = 0.3
-  let pid_I = 2.0
+  let kP = 0.3
+  let kI = 2.5
+
+  let t_max = sim.time + 6 * 3600
+  var I_pack = I_set
   var err_int = 0.0
 
   while I_pack > I_set * 0.05:
-
     var U_pack = sim.step(clamp(I_pack, 0.0, I_set))
 
     let err = U_set - U_pack
-    if I_pack > 0.0 and I_pack < I_set:
-      err_int += err * sim.dt
-      err_int = clamp(err_int, -2.0, 2.0)
+    err_int += err * sim.dt
+    err_int = clamp(err_int, -2.0, 2.0)
   
-    I_pack = (pid_P * err) + (pid_I * err_int)
+    I_pack = (kP * err) + (kI * err_int)
+
+    if sim.time > t_max:
+      raise newException(ValueError, "CC/CV charge timeout")
     
 
 proc sleep(sim: Simulation, d: Duration) =
@@ -584,12 +583,12 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
 
 
 var sim = newSimulation(5.0)
-sim.pack = sim.newPack(n_series=4, n_parallel=2, param)
+sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
-#sim.cells[0].param.R0 *= 1.2
-#sim.cells[0].param.Q_bol *= 0.9
+sim.cells[0].param.R0 *= 1.2
+sim.cells[0].param.Q_bol *= 1.0
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=500, n_report=5)
+sim.run(test1, count=4, n_report=10)
 
