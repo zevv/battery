@@ -77,6 +77,7 @@ type
 
   Module = object
     I_balance: Current
+    U: Voltage
     cells: seq[Cell]
 
   Balancer = object
@@ -344,47 +345,40 @@ proc report(cell: Cell) =
 
 
 proc balance(sim: Simulation, pack: var Pack) =
-  var U_min = 1e6
-  for module in pack.modules:
-    for cell in module.cells:
-      if cell.U < U_min:
-        U_min = cell.U
+
+  let U_min = pack.modules.mapIt(it.U).min
+
   for module in pack.modules.mitems:
-    var I_balance = 0.0
-    for cell in module.cells:
-      let dU = cell.U - U_min
-      if dU > 0.01:
-        I_balance -= pack.balancer.I
-    module.I_balance = I_balance
+    let dU = module.U - U_min
+    if module.U > 3.6 and dU > 0.01:
+      module.I_balance = - pack.balancer.I
+    else:
+      module.I_balance = 0.0
 
 
 proc step(sim: Simulation, I_pack: Current): Voltage =
 
   sim.balance(sim.pack)
 
-  var i = 0
-
-  for module in sim.pack.modules:
+  for module in sim.pack.modules.mitems:
    
-    # Current in the module is pack current + balancing current
-    let I_module = I_pack + module.I_balance
-
+    # Calculate parallel resistance of all cells in the module
     var sum_U_div_R = 0.0
     var sum_1_div_R = 0.0
-
-    # Calculate parallel resistance of all cells in the module
     for cell in module.cells:
       cell.update_R()
       sum_U_div_R += cell.U_src / cell.model.R0
       sum_1_div_R += 1.0 / cell.model.R0
 
-    let U_module = (I_module + sum_U_div_R) / sum_1_div_R
-    result += U_module
+    # Current in the module is pack current + balancing current
+    let I_module = I_pack + module.I_balance
+    module.U = (I_module + sum_U_div_R) / sum_1_div_R
+    result += module.U
 
+    # Update each cell in the module with the calculated cell current
     for cell in module.cells:
       cell.report()
-      inc i
-      let I_cell = (U_module - cell.U_src) / cell.model.R0
+      let I_cell = (module.U - cell.U_src) / cell.model.R0
       cell.update(I_cell, sim.dt)
         
   sim.time += sim.dt
