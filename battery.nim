@@ -242,7 +242,7 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   # Update the cell charge, taking into account the charge efficiency
   var dC = I * dt
   if I > 0.0:
-    let dynamic_charge_eff = param.charge_eff - (cell.R * param.R_efficiency_factor)
+    let dynamic_charge_eff = param.charge_eff - (cell.model.R0 * param.R_efficiency_factor)
     dC *= dynamic_charge_eff
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
@@ -467,10 +467,10 @@ let param = CellParam(
   R2:     0.010,
   C1:  4000.00,
   C2: 30000.00,
-  rc_core: RCParam(R: 2.5, C: 20.0),
-  rc_case: RCParam(R: 5.0, C: 5.0),
+  rc_core: RCParam(R: 2.5, C: 150.0),
+  rc_case: RCParam(R: 5.0, C:  30.0),
   Q_bol: Q_from_Ah(3.2),
-  I_leak_20: -1.4e-3,
+  I_leak_20: -0.14e-3,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
     3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
@@ -531,7 +531,7 @@ let param = CellParam(
   peukert: 1.03,
   R_efficiency_factor: 5.0,
   ap_static: ArrheniusParam(
-    A: 200.0,
+    A: 5.0,
     Ea: 55.0e3,
   ),
   ap_stress: ArrheniusParam(
@@ -551,7 +551,7 @@ proc test1(sim: Simulation) =
   sim.sleep(600)
 
 proc test2(sim: Simulation) =
-  sim.sleep(3600)
+  sim.sleep(24 * 3600)
 
 
 proc test3(sim: Simulation) =
@@ -609,10 +609,10 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   echo fmt"SOH range: {sim.cells.mapIt(it.soh).min:.3f} .. {sim.cells.mapIt(it.soh).max:.3f}"
 
 
-var sim = newSimulation(1.0)
+var sim = newSimulation(10.0)
 sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=1, n_report=1)
+sim.run(test1, count=500, n_report=8)
 
