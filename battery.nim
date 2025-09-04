@@ -335,6 +335,13 @@ proc report(cell: Cell) =
     let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
 
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.U {cell.U:f}")
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOC {cell.get_soc():f}")
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.T {cell.T:f}")
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOH {cell.soh:f}")
+
+
 
 proc balance(sim: Simulation, pack: var Pack) =
   var U_min = 1e6
@@ -590,5 +597,5 @@ sim.cells[0].param.R0 *= 1.2
 sim.cells[0].param.Q_bol *= 1.0
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=4, n_report=10)
+sim.run(test1, count=500, n_report=10)
 
