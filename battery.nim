@@ -40,6 +40,7 @@ type
     SOH_R_tab: Tab[Soh, float]
     SOC_R_tab: Tab[Soc, float]
     SOC_stress_Tab: Tab[Soc, float]
+    entropy_tab: Tab[Soc, float]
     Cth: Capacitance # thermal capacitance, J/K
     Rth: Resistance # thermal resistance, K/W
     charge_eff: float
@@ -65,8 +66,8 @@ type
     C: Charge # energy taken out
     R: Resistance
     Q_total: Charge
-    T_ambient: Temperature
-    T: Temperature
+    T_env: Temperature
+    T_core: Temperature
     I: Current
     I_lowpass: Current
     U: Voltage # terminal voltage
@@ -120,7 +121,7 @@ proc interpolate[A, B](tab: Tab[A, B], x: A): B =
 
 proc get_Q_effective(cell: Cell): Charge =
   # Temperature factor
-  let T_factor = interpolate(cell.param.temp_tab, cell.T)
+  let T_factor = interpolate(cell.param.temp_tab, cell.T_core)
   # Peukert factor
   var P_factor = 1.0
   let I_ref = 0.2 * cell.param.Q_bol / 3600
@@ -135,7 +136,7 @@ proc get_soc(cell: Cell): Soc =
 
 
 proc T_to_R_factor(cell: Cell): float =
-  return interpolate(cell.param.T_R_tab, cell.T)
+  return interpolate(cell.param.T_R_tab, cell.T_core)
 
 
 proc SOH_to_R_factor(cell: Cell): float =
@@ -185,7 +186,7 @@ proc update_soh(cell: Cell, dt: Interval) =
   cell.dsoh = 0.0
 
   # 'static' calendar aging
-  cell.dsoh += -arrhenius(param.ap_static, cell.T)
+  cell.dsoh += -arrhenius(param.ap_static, cell.T_core)
 
   # 'stress' aging due to cycling
   let dC = abs(cell.I) * dt
@@ -194,7 +195,7 @@ proc update_soh(cell: Cell, dt: Interval) =
     let I_nominal = cell.param.Q_bol / 3600
     let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
     let soc_stress = interpolate(param.SOC_stress_Tab, cell.get_soc())
-    let degradation_rate = arrhenius(param.ap_stress, cell.T)
+    let degradation_rate = arrhenius(param.ap_stress, cell.T_core)
     cell.dsoh += -degradation_rate * power_stress * soc_stress
   
   cell.soh += cell.dsoh * dt
@@ -232,21 +233,24 @@ proc update(cell: Cell, I: Current, dt: Interval) =
     dC *= dynamic_charge_eff
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
-  let I_leak = param.I_leak_20 * pow(2, (cell.T - 20.0) / 10.0)
+  let I_leak = param.I_leak_20 * pow(2, (cell.T_core - 20.0) / 10.0)
   dC += I_leak * dt
 
   cell.C += dC
   cell.Q_total += abs(dC)
 
-  # Update cell temperature
+  # Calculate total power dissipation
   let P_R0 = I * I * cell.model.R0
   let P_R1 = I_R1 * I_R1 * cell.model.R1
   let P_R2 = I_R2 * I_R2 * cell.model.R2
   let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
   let P_leak = abs(I_leak) * cell.U
-  let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak
-  let P_env = (cell.T - cell.T_ambient) / param.Rth
-  cell.T += (P_dis - P_env) * dt / param.Cth
+  let P_rev = interpolate(param.entropy_tab, cell.get_soc()) * (cell.T_core+273.15) * I
+  let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak + P_rev
+
+  # Update the cell temperature
+  let P_env = (cell.T_core - cell.T_env) / param.Rth
+  cell.T_core += (P_dis - P_env) * dt / param.Cth
 
   # Update state of health
   cell.update_soh(dt)
@@ -266,8 +270,8 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.model = CellModel()
   cell.C = 0.0
   cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
-  cell.T = 20.0
-  cell.T_ambient = 20.0
+  cell.T_core = 20.0
+  cell.T_env = 20.0
   cell.soh = 1.0
 
   let fname = fmt"/tmp/cell_{cell.id:02}.log"
@@ -280,8 +284,8 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   sim.cells.add(cell)
 
   # Deviations
-  cell.param.Q_bol *= rand(0.9 .. 1.00)
-  cell.param.R0 *= rand(0.95 .. 1.00)
+  #cell.param.Q_bol *= rand(0.9 .. 1.00)
+  #cell.param.R0 *= rand(0.95 .. 1.00)
 
   return cell
 
@@ -333,13 +337,13 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 proc report(cell: Cell) =
   if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
-    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T:>4.2f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
+    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
 
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.U {cell.U:f}")
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOC {cell.get_soc():f}")
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.T {cell.T:f}")
+    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.T {cell.T_core:f}")
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOH {cell.soh:f}")
 
 
@@ -501,6 +505,13 @@ let param = CellParam(
     (0.9, 1.5),
     (1.0, 3.0)
   ],
+  entropy_tab: @[
+    (0.0,  0.0002),
+    (0.2,  0.0001),
+    (0.5, -0.0001),
+    (0.8, -0.0003),
+    (1.0,  0.0004)
+  ],
   charge_eff: 0.96,
   peukert: 1.03,
   R_efficiency_factor: 5.0,
@@ -525,7 +536,7 @@ proc test1(sim: Simulation) =
   sim.sleep(600)
 
 proc test2(sim: Simulation) =
-  sim.sleep(4 * 3600)
+  sim.sleep(3600)
 
 
 proc test3(sim: Simulation) =
@@ -583,13 +594,10 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   echo fmt"SOH range: {sim.cells.mapIt(it.soh).min:.3f} .. {sim.cells.mapIt(it.soh).max:.3f}"
 
 
-var sim = newSimulation(5.0)
-sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
+var sim = newSimulation(1.0)
+sim.pack = sim.newPack(n_series=2, n_parallel=1, param)
 sim.pack.balancer.I = 0.200
 
-sim.cells[0].param.R0 *= 1.2
-sim.cells[0].param.Q_bol *= 1.0
-
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=500, n_report=10)
+sim.run(test1, count=1, n_report=1)
 
