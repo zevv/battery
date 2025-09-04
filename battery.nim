@@ -24,6 +24,10 @@ type
     A: float # pre-exponential factor, 1/s
     Ea: float # activation energy, J/mol
 
+  RCParam = object
+    R: Resistance
+    C: Capacitance
+
   CellParam = object
     vendor: string
     model: string
@@ -41,10 +45,8 @@ type
     SOC_R_tab: Tab[Soc, float]
     SOC_stress_Tab: Tab[Soc, float]
     entropy_tab: Tab[Soc, float]
-    Cth_core: Capacitance # thermal capacitance, J/K
-    Rth_core: Resistance # thermal resistance, K/W
-    Cth_case: Capacitance # thermal capacitance, J/K
-    Rth_case: Resistance # thermal resistance, K/W
+    rc_core: RCParam
+    rc_case: RCParam
     charge_eff: float
     peukert: float
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
@@ -207,6 +209,14 @@ proc update_soh(cell: Cell, dt: Interval) =
     raise newException(ValueError, "Cell SOH dropped to zero")
 
 
+proc update_temperature(cell: Cell, P_dis: Power, dt: Interval) =
+  let param = cell.param
+  let P_core_to_case = (cell.T_core - cell.T_case) / param.rc_core.R
+  cell.T_core += (P_dis - P_core_to_case) * dt / param.rc_core.C
+  let P_case_to_env = (cell.T_case - cell.T_env) / param.rc_case.R
+  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.rc_case.C
+
+
 proc update(cell: Cell, I: Current, dt: Interval) =
   let param = cell.param
 
@@ -251,12 +261,7 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   let P_rev = interpolate(param.entropy_tab, cell.get_soc()) * (cell.T_core+273.15) * I
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak + P_rev
 
-  # Update the cell temperature
-  let P_core_to_case = (cell.T_core - cell.T_case) / param.Rth_core
-  let P_case_to_env = (cell.T_case - cell.T_env) / param.Rth_core
-
-  cell.T_core += (P_dis - P_core_to_case) * dt / param.Cth_core
-  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.Cth_case
+  cell.update_temperature(P_dis, dt)
 
   # Update state of health
   cell.update_soh(dt)
@@ -462,10 +467,8 @@ let param = CellParam(
   R2:     0.010,
   C1:  4000.00,
   C2: 30000.00,
-  Cth_core:   20.00,
-  Rth_core:    2.50,
-  Cth_case:    5.00,
-  Rth_case:    5.00,
+  rc_core: RCParam(R: 2.5, C: 20.0),
+  rc_case: RCParam(R: 5.0, C: 5.0),
   Q_bol: Q_from_Ah(3.2),
   I_leak_20: -1.4e-3,
   soc_tab: @[
@@ -516,6 +519,7 @@ let param = CellParam(
     (0.9, 1.5),
     (1.0, 3.0)
   ],
+  # file:///home/ico/Downloads/energies-12-02685.pdf, figure 5
   entropy_tab: @[
     (0.0,  0.0002),
     (0.2,  0.0001),
