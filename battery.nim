@@ -41,8 +41,10 @@ type
     SOC_R_tab: Tab[Soc, float]
     SOC_stress_Tab: Tab[Soc, float]
     entropy_tab: Tab[Soc, float]
-    Cth: Capacitance # thermal capacitance, J/K
-    Rth: Resistance # thermal resistance, K/W
+    Cth_core: Capacitance # thermal capacitance, J/K
+    Rth_core: Resistance # thermal resistance, K/W
+    Cth_case: Capacitance # thermal capacitance, J/K
+    Rth_case: Resistance # thermal resistance, K/W
     charge_eff: float
     peukert: float
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
@@ -68,6 +70,7 @@ type
     Q_total: Charge
     T_env: Temperature
     T_core: Temperature
+    T_case: Temperature
     I: Current
     I_lowpass: Current
     U: Voltage # terminal voltage
@@ -249,8 +252,11 @@ proc update(cell: Cell, I: Current, dt: Interval) =
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak + P_rev
 
   # Update the cell temperature
-  let P_env = (cell.T_core - cell.T_env) / param.Rth
-  cell.T_core += (P_dis - P_env) * dt / param.Cth
+  let P_core_to_case = (cell.T_core - cell.T_case) / param.Rth_core
+  let P_case_to_env = (cell.T_case - cell.T_env) / param.Rth_core
+
+  cell.T_core += (P_dis - P_core_to_case) * dt / param.Cth_core
+  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.Cth_case
 
   # Update state of health
   cell.update_soh(dt)
@@ -271,6 +277,7 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.C = 0.0
   cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
   cell.T_core = 20.0
+  cell.T_case = 20.0
   cell.T_env = 20.0
   cell.soh = 1.0
 
@@ -284,8 +291,8 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   sim.cells.add(cell)
 
   # Deviations
-  #cell.param.Q_bol *= rand(0.9 .. 1.00)
-  #cell.param.R0 *= rand(0.95 .. 1.00)
+  cell.param.Q_bol *= rand(0.9 .. 1.00)
+  cell.param.R0 *= rand(0.95 .. 1.00)
 
   return cell
 
@@ -313,23 +320,25 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   l("set bmargin 1")
   l("set offsets graph 0, 0, 0.05, 0.05")
 
-  proc gen_graph(col: int, ylabel: string, pres: openArray[string]) =
+  proc gen_graph(gs: openArray[tuple[col: int, ylabel: string]], pres: openArray[string]) =
     var ts: seq[string]
-    for cell in sim.cells.mitems:
-      ts.add(&""" "/tmp/cell_{cell.id:02}.log" u {col} w l""")
+    for i, g in gs:
+      let lt = if i == 0: "1" else: "2"
+      for cell in sim.cells.mitems:
+        ts.add(&""" "/tmp/cell_{cell.id:02}.log" u {g.col} w l dt {lt} """)
 
     l("")
     for pre in pres:
       l(pre)
-    l(&"""set ylabel "{ylabel}"""")
+    l(&"""set ylabel "{gs[0].ylabel}"""")
     l(&"""plot {ts.join(", ")}""")
 
-  gen_graph(1, "I (A)",    [ "unset yrange" ])
-  gen_graph(2, "U (V)",    [ "set yrange [2.3:4.4]" ])
-  gen_graph(3, "SOC (%)",  [ "set yrange [-0.1:1.1]" ])
-  gen_graph(4, "T (°C)",   [ "unset yrange" ])
-  gen_graph(5, "SOH (%)",  [ "set yrange [-0.1:1.1]" ])
-  #gen_graph(6, "dSOH",     [ "unset yrange" ])
+  gen_graph([ (1, "I (A)",      )], [ "unset yrange" ])
+  gen_graph([ (2, "U (V)",      )], [ "set yrange [2.3:4.4]" ])
+  gen_graph([ (3, "SOC (%)",    )], [ "set yrange [-0.1:1.1]" ])
+  gen_graph([ (4, "T_core (°C)",),
+              (5, "T_case (°C)",)], [ "set yrange [19:30] " ])
+  gen_graph([ (6, "SOH (%)",    )], [ "set yrange [-0.1:1.1]" ])
 
   fd.write("unset multiplot\n")
   fd.close()
@@ -337,7 +346,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 proc report(cell: Cell) =
   if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
-    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
+    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
 
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
@@ -453,8 +462,10 @@ let param = CellParam(
   R2:     0.010,
   C1:  4000.00,
   C2: 30000.00,
-  Cth:   25.00,
-  Rth:    5.00,
+  Cth_core:   20.00,
+  Rth_core:    2.50,
+  Cth_case:    5.00,
+  Rth_case:    5.00,
   Q_bol: Q_from_Ah(3.2),
   I_leak_20: -1.4e-3,
   soc_tab: @[
@@ -595,7 +606,7 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
 
 
 var sim = newSimulation(1.0)
-sim.pack = sim.newPack(n_series=2, n_parallel=1, param)
+sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
 sim.gen_gnuplot("view.gp")
