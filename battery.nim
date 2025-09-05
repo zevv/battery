@@ -141,19 +141,6 @@ proc get_soc(cell: Cell): Soc =
   return (Q_effective + cell.Q) / Q_effective
 
 
-proc T_to_R_factor(cell: Cell): float =
-  return interpolate(cell.param.T_R_tab, cell.T_core)
-
-
-proc SOH_to_R_factor(cell: Cell): float =
-  return interpolate(cell.param.SOH_R_tab, cell.soh)
-
-
-proc SOC_to_R_factor(cell: Cell): float =
-  let soc = cell.get_soc()
-  return interpolate(cell.param.SOC_R_tab, soc)
-
-
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
   let n = len(cp.soc_tab)
   if soc <= 0.0:
@@ -171,9 +158,9 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
 proc update_R(cell: var Cell) =
   let param = cell.param
 
-  let T_factor = cell.T_to_R_factor()
-  let SOH_factor = cell.SOH_to_R_factor()
-  let SOC_factor = cell.SOC_to_R_factor()
+  let T_factor = interpolate(param.T_R_tab, cell.T_core)
+  let SOH_factor = interpolate(param.SOH_R_tab, cell.soh)
+  let SOC_factor = interpolate(param.SOC_R_tab, cell.get_soc())
 
   cell.RC_dc.R = param.RC_dc.R * T_factor * SOH_factor
   cell.RC_trans.R = param.RC_trans.R * T_factor * SOC_factor * SOH_factor
