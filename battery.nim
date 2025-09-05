@@ -197,15 +197,12 @@ proc update_soh(cell: var Cell, dt: Interval) =
   # 'static' calendar aging
   cell.dsoh += -arrhenius(param.ap_static, cell.T_core)
 
-  # 'stress' aging due to cycling
-  let dC = abs(cell.I) * dt
-  if dC > 0:
-    # Stress factors: power, SOC window
-    let I_nominal = cell.param.Q_bol / 3600
-    let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
-    let soc_stress = interpolate(param.SOC_stress_Tab, cell.get_soc())
-    let degradation_rate = arrhenius(param.ap_stress, cell.T_core)
-    cell.dsoh += -degradation_rate * power_stress * soc_stress
+  # Stress factors: power, SOC window
+  let I_nominal = cell.param.Q_bol / 3600
+  let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
+  let soc_stress = interpolate(param.SOC_stress_Tab, cell.get_soc())
+  let degradation_rate = arrhenius(param.ap_stress, cell.T_core)
+  cell.dsoh += -degradation_rate * power_stress * soc_stress
   
   cell.soh += cell.dsoh * dt
 
@@ -246,17 +243,17 @@ proc update_RC(rc: var RCModel, rp: RCParam, I: Current, dt: Interval) =
 proc update_charge(cell: var Cell, I: Current, dt: Interval) =
   let param = cell.param
   # Update the cell charge, taking into account the charge efficiency
-  var dC = I * dt
+  var dQ = I * dt
   if I > 0.0:
     let dynamic_charge_eff = param.charge_eff - (cell.RC_dc.R * param.R_efficiency_factor)
-    dC *= dynamic_charge_eff
+    dQ *= dynamic_charge_eff
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
   cell.I_leak = param.I_leak_20 * pow(2, (cell.T_core - 20.0) / 10.0)
-  dC += cell.I_leak * dt
+  dQ += cell.I_leak * dt
 
-  cell.Q += dC
-  cell.Q_total += abs(dC)
+  cell.Q += dQ
+  cell.Q_total += abs(dQ)
 
 
 proc update_voltage(cell: var Cell) =
