@@ -710,7 +710,7 @@ sim.pack.balancer.I = 0.200
 
 sim.pack.modules[0].cells[0].T_env = -5.0
 
-#sim.run(test_cycle, count=100, n_report=3)
-sim.run(test_EIS)
+sim.run(test_cycle, count=100, n_report=3)
+#sim.run(test_EIS)
 sim.gen_gnuplot("battery.gp")
 
