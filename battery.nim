@@ -1,5 +1,5 @@
 
-import std/[sequtils, tables, strutils, math, times, options, os, strformat, random, algorithm]
+import std/[sequtils, tables, strutils, math, times, options, os, strformat, random, algorithm, tempfiles]
 
 type 
 
@@ -61,10 +61,6 @@ type
     I_R: Current
     I_C: Current
 
-  RCtModel = object
-    R: Resistance
-    T: Temperature
-
   Cell = object
     id: int
     sim: Simulation
@@ -73,8 +69,8 @@ type
     RC1: RCModel # charge transfer
     RC2: RCModel # diffusion
     Q: Charge # energy taken out
-    R: Resistance
     Q_total: Charge
+    R: Resistance
     T_env: Temperature
     T_core: Temperature
     T_case: Temperature
@@ -86,6 +82,7 @@ type
     fd_log: File
     soh: Soh
     dsoh: float
+    log: seq[string]
 
   Module = object
     I_balance: Current
@@ -103,7 +100,6 @@ type
 
   Simulation = ref object
     pack: Pack
-    cell_count: int
     time: float
     dt: float
     cycle_number: int
@@ -284,9 +280,10 @@ proc update(cell: var Cell, I: Current, dt: Interval) =
   cell.update_soh(dt)
 
 
+var idx = 0
+
 proc newCell(sim: Simulation, param: CellParam): Cell =
   var cell = Cell()
-  cell.id = sim.cell_count
   cell.sim = sim
   cell.param = param
   cell.Q = 0.0
@@ -295,8 +292,10 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.T_env = 20.0
   cell.soh = 1.0
 
-  let fname = fmt"/tmp/cell_{cell.id:02}.log"
-  cell.fd_log = open(fname, fmWrite)
+  let fname = genTempPath("cell", "log")
+  cell.fd_log = open(fname, fmReadWrite)
+  removeFile(fname)
+  inc idx
 
   # Run one step to initialize cell state
   cell.update_R()
@@ -306,7 +305,6 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.param.Q_bol *= rand(0.9 .. 1.00)
   cell.param.RC0.R *= rand(0.95 .. 1.00)
 
-  inc sim.cell_count
   return cell
 
 
@@ -332,20 +330,33 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   l("set tmargin 1")
   l("set bmargin 1")
   l("set offsets graph 0, 0, 0.05, 0.05")
+  l("")
+
+  # Emit inline data blocks for all cells
+
+  for mid, module in sim.pack.modules:
+    for cid, cell in module.cells:
+      l(fmt"$cell_{mid:02}_{cid:02} << EOD")
+      cell.fd_log.setFilePos(0)
+      for line in cell.fd_log.lines:
+        l(line)
+      l("EOD")
+      l("")
+
+  # Emit plotting commands
 
   proc gen_graph(gs: openArray[tuple[col: int, ylabel: string]], pres: openArray[string]) =
     var ts: seq[string]
     for i, g in gs:
       let lt = if i == 0: "1" else: "2"
-      for module in sim.pack.modules:
-        for cell in module.cells:
-          ts.add(&""" "/tmp/cell_{cell.id:02}.log" u 1:{g.col} w l dt {lt} """)
-
-    l("")
+      for mid, module in sim.pack.modules:
+        for cid, cell in module.cells:
+          ts.add(&""" $cell_{mid:02}_{cid:02} u {g.col} w l dt {lt} """ )
     for pre in pres:
       l(pre)
     l(&"""set ylabel "{gs[0].ylabel}"""")
     l(&"""plot {ts.join(", ")}""")
+    l("")
 
   gen_graph([ (2, "I (A)",      )], [ "unset yrange" ])
   gen_graph([ (3, "U (V)",      )], [ "set yrange [2.3:4.4]" ])
@@ -358,11 +369,12 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
   fd.close()
 
 
-proc report(cell: Cell) =
+proc report(cell: var Cell) =
   if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
     let line = fmt"{cell.sim.time} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
-
+  
+    # bitline
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.U {cell.U:f}")
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOC {cell.get_soc():f}")
@@ -372,9 +384,7 @@ proc report(cell: Cell) =
 
 
 proc balance(sim: Simulation, pack: var Pack) =
-
   let U_min = pack.modules.mapIt(it.U).min
-
   for module in pack.modules.mitems:
     let dU = module.U - U_min
     if module.U > 3.6 and dU > 0.01:
@@ -404,9 +414,9 @@ proc step(sim: Simulation, I_pack: Current): Voltage =
 
     # Update each cell in the module with the calculated cell current
     for cell in module.cells.mitems:
-      cell.report()
       let I_cell = (module.U - cell.U_src) / cell.RC0.R
       cell.update(I_cell, sim.dt)
+      cell.report()
         
   sim.time += sim.dt
 
@@ -553,7 +563,7 @@ let param = CellParam(
 proc test1(sim: Simulation) =
   sim.sleep(600)
   sim.discharge(-8.0, sim.pack.U_empty)
-  sim.sleep(1200)
+  sim.sleep(3600)
   #sim.charge(+4.0, sim.pack.U_full)
   sim.charge_CC_CV(+4.0, sim.pack.U_full)
   sim.sleep(600)
@@ -620,6 +630,6 @@ var sim = newSimulation(10.0)
 sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
-sim.gen_gnuplot("view.gp")
 sim.run(test1, count=1, n_report=8)
+sim.gen_gnuplot("battery.gp")
 
