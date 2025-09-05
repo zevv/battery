@@ -240,7 +240,8 @@ proc update_RC(rc: var RCModel, rp: RCParam, I: Current, dt: Interval) =
 
 proc update_charge(cell: var Cell, I: Current, dt: Interval) =
   let param = cell.param
-  # Update the cell charge, taking into account the charge efficiency
+
+# Update the cell charge, taking into account the charge efficiency
   var dQ = I * dt
   if I > 0.0:
     let dynamic_charge_eff = param.charge_eff - (cell.RC_dc.R * param.R_efficiency_factor)
@@ -280,7 +281,6 @@ proc update(cell: var Cell, I: Current, dt: Interval) =
   cell.update_soh(dt)
 
 
-var idx = 0
 
 proc newCell(sim: Simulation, param: CellParam): Cell =
   var cell = Cell()
@@ -296,7 +296,6 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   let fname = genTempPath("cell", "log")
   cell.fd_log = open(fname, fmReadWrite)
   removeFile(fname)
-  inc idx
 
   # Run one step to initialize cell state
   cell.update_R()
