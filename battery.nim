@@ -376,7 +376,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 
 proc report(cell: var Cell) =
-  let line = &"{cell.sim.time_report} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
+  let line = &"{cell.sim.time_report / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
   cell.fd_log.writeLine(line)
   
     # bitline
@@ -493,18 +493,17 @@ proc sleep(sim: Simulation, d: Duration) =
 let param = CellParam(
   vendor: "Samsung",
   model:  "INR18650-32E",
-  RC_dc:      RCParam(R: 0.025),
+  RC_dc:      RCParam(R: 0.045),
   RC_trans: RCParam(R: 0.015, C:  4000.0),
   RC_diff: @[ 
-    RCParam(R: 0.030, C:  30_000),
-    RCParam(R: 0.015, C:  90_000),
-    RCParam(R: 0.008, C: 270_000),
-    RCParam(R: 0.007, C: 810_000),
-    RCParam(R: 0.006, C:1600_000), # τ ≈ 3240s (~54 min)
+    RCParam(R: 0.008, C:    11_200),
+    RCParam(R: 0.006, C:    50_000),
+    RCParam(R: 0.004, C:   240_000),
+    RCParam(R: 0.002, C: 1_200_000),
   ],
   RCcore: RCtParam(R: 2.500, C:   150.0),
   RCcase: RCtParam(R: 5.000, C:    30.0),
-  Q_bol: Q_from_Ah(3.2),
+  Q_bol: Q_from_Ah(3.5),
   I_leak_20: -0.14e-3,
   soc_tab: @[
     2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
@@ -579,7 +578,7 @@ let param = CellParam(
 
 proc test_cycle(sim: Simulation) =
   sim.sleep(600)
-  sim.discharge(-8.0, sim.pack.U_empty)
+  sim.discharge(-5.6, sim.pack.U_empty)
   sim.sleep(3600)
   #sim.charge(+4.0, sim.pack.U_full)
   sim.charge_CC_CV(+4.0, sim.pack.U_full)
@@ -631,9 +630,10 @@ proc test_commute(sim: Simulation) =
   if remaining_time > 0:
     sim.sleep(remaining_time)
 
+
 proc test_EIS_f(sim: Simulation, freq: float) =
   let cycles = 3
-  let steps_per_cycle = 20
+  let steps_per_cycle = 100
   let steps = cycles * steps_per_cycle
   let dt = 1.0 / (freq * steps_per_cycle.float)
   stderr.write(&"EIS {freq:>8.3f} Hz, dt={dt:>6.4g} s, steps={steps}\n")
@@ -667,7 +667,7 @@ proc test_EIS_f2(sim: Simulation, freq: float) =
 
 
 proc test_EIS(sim: Simulation) =
-  var f = 0.0006
+  var f = 0.0003
   while f < 100:
     sim.charge_CC_CV(+4.0, sim.pack.U_full)
     sim.sleep(3600)
@@ -686,11 +686,15 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int
   stderr.write &"Completed {count} cycles, total time {days}d {hours}h {minutes}m\n"
 
 
+for rc in param.RC_diff:
+  let T = rc.R * rc.C
+  stderr.write(&"RC diff: R={rc.R:.3f} Ω, C={rc.C:.1f} F, T={T:.1f} s\n")
+
 var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
+sim.pack = sim.newPack(n_series=2, n_parallel=4, param)
 sim.pack.balancer.I = 0.200
 
-sim.run(test_cycle, count=300, n_report=3)
+sim.run(test_cycle, count=100, n_report=4)
 #sim.run(test_EIS)
 sim.gen_gnuplot("battery.gp")
 
