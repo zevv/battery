@@ -498,7 +498,7 @@ proc sleep(sim: Simulation, d: Duration) =
 let param = CellParam(
   vendor: "Samsung",
   model:  "INR18650-32E",
-  RC_dc:      RCParam(R: 0.035),
+  RC_dc:      RCParam(R: 0.040),
   RC_trans: RCParam(R: 0.015, C:  4000.0),
   RC_diff: @[ 
     RCParam(R: 0.008, C:    11_200),
@@ -636,14 +636,13 @@ proc test_commute(sim: Simulation) =
     sim.sleep(remaining_time)
 
 
-proc test_EIS_f(sim: Simulation, freq: float) =
+proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
   let cycles = 3
   let steps_per_cycle = 100
   let steps = cycles * steps_per_cycle
   let dt = 1.0 / (freq * steps_per_cycle.float)
   stderr.write(&"EIS {freq:>8.3f} Hz, dt={dt:>6.4g} s, steps={steps}\n")
   let I_amp = +0.020
-  let I_off = -0.002
   var Zr = 0.0
   var Zi = 0.0
   var n = 0
@@ -652,7 +651,7 @@ proc test_EIS_f(sim: Simulation, freq: float) =
     let t = sim.time - t_start
     let ref_sin = sin(TAU * freq * t)
     let ref_cos = cos(TAU * freq * t)
-    var U = sim.step(ref_sin * I_amp + I_off, dt)
+    var U = sim.step(ref_sin * I_amp + I_bias, dt)
     Zr += U * ref_sin
     Zi += U * ref_cos
     inc n
@@ -664,7 +663,7 @@ proc test_EIS_f(sim: Simulation, freq: float) =
   echo freq, " ", Zr, " ", Zi, " ", mag, " ", pha
 
 
-proc test_EIS_f2(sim: Simulation, freq: float) =
+proc test_EIS_f2(sim: Simulation, freq: float, I_bias: Current) =
   let w = TAU * freq
   var Z = complex(param.RC_dc.R)
   Z += param.RC_trans.R / complex(1.0, w * param.RC_trans.R * param.RC_trans.C)
@@ -677,12 +676,19 @@ proc test_EIS_f2(sim: Simulation, freq: float) =
 
 # https://pubs.acs.org/doi/pdf/10.1021/acsmeasuresciau.2c00070?ref=article_openPDF
 
+proc discharge_time(sim: Simulation, I: Current, t: Duration) =
+  let t_start = sim.time
+  while sim.time < t_start + t:
+    discard sim.step(I, sim.dt)
+
+
 proc test_EIS(sim: Simulation) =
+  let I_bias = -0.001
   var f = 0.0003
+  sim.discharge_time(I_bias, 180)
   while f < 100:
-    sim.charge_CC_CV(+4.0, sim.pack.U_full)
-    sim.sleep(3600)
-    sim.test_EIS_f(f)
+    #sim.charge_CC_CV(+4.0, sim.pack.U_full)
+    sim.test_EIS_f(f, I_bias)
     f *= 1.5
 
 proc run(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int=1) =
