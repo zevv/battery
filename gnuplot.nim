@@ -1,6 +1,6 @@
 import std / [ os, strformat, sequtils, strutils ]
 
-import battery
+import model
 
 proc gen_gnuplot*(sim: Simulation, fname: string) =
   let fd = open(fname, fmWrite)

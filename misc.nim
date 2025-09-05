@@ -1,5 +1,5 @@
 
-import battery
+import model
 
 proc discharge*(sim: Simulation, I: Current, U_min: Voltage) =
   while true:

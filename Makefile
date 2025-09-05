@@ -1,7 +1,8 @@
 
+SRC := $(wildcard *.nim)
 
-battery: main.nim battery.nim
-	nim --mm:none -d:release --debugger:native c main.nim
+battery: $(SRC)
+	nim --mm:none -d:release --debugger:native c battery.nim
 
 clean:
 	rm -f battery

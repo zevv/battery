@@ -1,7 +1,7 @@
 
 import std / [math, strformat]
 
-import battery
+import model
 
 proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
   let cycles = 3

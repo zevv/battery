@@ -1,7 +1,7 @@
 
 import std/[ random, math ]
 
-import battery
+import model
 import misc
 
 proc test_commute*(sim: Simulation) =
