@@ -307,9 +307,14 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.update_R()
   cell.update(0.0, 0.0)
 
-  # Deviations
-  cell.param.Q_bol *= rand(0.9 .. 1.00)
-  cell.param.RC_dc.R *= rand(0.95 .. 1.00)
+  # Deviations 
+  cell.param.Q_bol *= gauss(1.0, 0.01)
+  cell.param.RC_dc.R *= gauss(1.0, 0.05)
+  cell.param.I_leak_20 *= gauss(1.0, 0.30)
+  cell.param.ap_static.A *= gauss(1.0, 0.10)
+  cell.param.ap_static.Ea *= gauss(1.0, 0.05)
+  cell.param.ap_stress.A *= gauss(1.0, 0.10)
+  cell.param.ap_stress.Ea *= gauss(1.0, 0.05)
 
   return cell
 
@@ -493,7 +498,7 @@ proc sleep(sim: Simulation, d: Duration) =
 let param = CellParam(
   vendor: "Samsung",
   model:  "INR18650-32E",
-  RC_dc:      RCParam(R: 0.045),
+  RC_dc:      RCParam(R: 0.035),
   RC_trans: RCParam(R: 0.015, C:  4000.0),
   RC_diff: @[ 
     RCParam(R: 0.008, C:    11_200),
@@ -637,7 +642,8 @@ proc test_EIS_f(sim: Simulation, freq: float) =
   let steps = cycles * steps_per_cycle
   let dt = 1.0 / (freq * steps_per_cycle.float)
   stderr.write(&"EIS {freq:>8.3f} Hz, dt={dt:>6.4g} s, steps={steps}\n")
-  let I_amp = 0.010
+  let I_amp = +0.020
+  let I_off = -0.002
   var Zr = 0.0
   var Zi = 0.0
   var n = 0
@@ -646,10 +652,13 @@ proc test_EIS_f(sim: Simulation, freq: float) =
     let t = sim.time - t_start
     let ref_sin = sin(TAU * freq * t)
     let ref_cos = cos(TAU * freq * t)
-    var U = sim.step(ref_sin * I_amp, dt)
-    Zr  += U * ref_sin / steps.float
-    Zi += U * ref_cos / steps.float
+    var U = sim.step(ref_sin * I_amp + I_off, dt)
+    Zr += U * ref_sin
+    Zi += U * ref_cos
     inc n
+  let scale = 2.0 / (I_amp * steps.float)
+  Zr *= scale
+  Zi *= scale
   let pha = arctan2(Zi, Zr) * 180.0 / PI
   let mag = sqrt(Zr*Zr + Zi*Zi)
   echo freq, " ", Zr, " ", Zi, " ", mag, " ", pha
@@ -665,6 +674,8 @@ proc test_EIS_f2(sim: Simulation, freq: float) =
   let pha = arctan2(Z.im, Z.re) * 180.0 / PI
   echo freq, " ", Z.re, " ", Z.im, " ", mag, " ", pha
 
+
+# https://pubs.acs.org/doi/pdf/10.1021/acsmeasuresciau.2c00070?ref=article_openPDF
 
 proc test_EIS(sim: Simulation) =
   var f = 0.0003
@@ -691,10 +702,12 @@ for rc in param.RC_diff:
   stderr.write(&"RC diff: R={rc.R:.3f} Ω, C={rc.C:.1f} F, T={T:.1f} s\n")
 
 var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=2, n_parallel=4, param)
+sim.pack = sim.newPack(n_series=1, n_parallel=1, param)
 sim.pack.balancer.I = 0.200
 
-sim.run(test_cycle, count=100, n_report=4)
-#sim.run(test_EIS)
+sim.pack.modules[0].cells[0].T_env = -5.0
+
+#sim.run(test_cycle, count=100, n_report=3)
+sim.run(test_EIS)
 sim.gen_gnuplot("battery.gp")
 
