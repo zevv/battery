@@ -308,9 +308,9 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.param.Q_bol *= gauss(1.0, 0.01)
   cell.param.RC_dc.R *= gauss(1.0, 0.05)
   cell.param.I_leak_20 *= gauss(1.0, 0.30)
-  cell.param.ap_static.A *= gauss(1.0, 0.10)
+  cell.param.ap_static.A *= gauss(1.0, 0.05)
   cell.param.ap_static.Ea *= gauss(1.0, 0.05)
-  cell.param.ap_stress.A *= gauss(1.0, 0.10)
+  cell.param.ap_stress.A *= gauss(1.0, 0.05)
   cell.param.ap_stress.Ea *= gauss(1.0, 0.05)
 
   return cell
@@ -394,7 +394,7 @@ proc balance(sim: Simulation, pack: var Pack) =
   let U_min = pack.modules.mapIt(it.U).min
   for module in pack.modules.mitems:
     let dU = module.U - U_min
-    if module.U > 3.6 and dU > 0.01:
+    if module.U > 4.1 and dU > 0.02:
       module.I_balance = - pack.balancer.I
     else:
       module.I_balance = 0.0
@@ -402,7 +402,8 @@ proc balance(sim: Simulation, pack: var Pack) =
 
 proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
-  sim.balance(sim.pack)
+  if I_pack > 0.0:
+    sim.balance(sim.pack)
   
   let do_report = sim.cycle_number mod sim.report_every_n == 0
 
@@ -705,12 +706,10 @@ for rc in param.RC_diff:
   stderr.write(&"RC diff: R={rc.R:.3f} Ω, C={rc.C:.1f} F, T={T:.1f} s\n")
 
 var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=1, n_parallel=1, param)
+sim.pack = sim.newPack(n_series=4, n_parallel=4, param)
 sim.pack.balancer.I = 0.200
 
-sim.pack.modules[0].cells[0].T_env = -5.0
-
-sim.run(test_cycle, count=100, n_report=3)
+sim.run(test_cycle, count=100, n_report=8)
 #sim.run(test_EIS)
 sim.gen_gnuplot("battery.gp")
 
