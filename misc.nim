@@ -6,7 +6,7 @@ proc discharge*(sim: Simulation, I: Current, U_min: Voltage) =
     var U = sim.step(I, sim.dt)
     if U < U_min:
       return
-    for module in sim.pack.modules:
+    for module in sim.battery.pack.modules:
       for cell in module.cells:
         if cell.U < 2.5:
           return

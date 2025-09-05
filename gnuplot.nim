@@ -23,7 +23,7 @@ proc gen_gnuplot*(sim: Simulation, fname: string) =
 
   # Emit inline data blocks for all cells
 
-  for mid, module in sim.pack.modules:
+  for mid, module in sim.battery.pack.modules:
     for cid, cell in module.cells:
       l(&"$cell_{mid:02}_{cid:02} << EOD")
       cell.fd_log.setFilePos(0)
@@ -38,7 +38,7 @@ proc gen_gnuplot*(sim: Simulation, fname: string) =
     var ts: seq[string]
     for i, g in gs:
       let lt = if i == 0: "1" else: "2"
-      for mid, module in sim.pack.modules:
+      for mid, module in sim.battery.pack.modules:
         for cid, cell in module.cells:
           ts.add(&""" $cell_{mid:02}_{cid:02} u 1:{g.col} w l dt {lt} """ )
     for pre in pres:

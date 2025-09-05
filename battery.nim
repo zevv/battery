@@ -94,10 +94,10 @@ let param = CellParam(
 
 proc test_cycle(sim: Simulation) =
   sim.sleep(600)
-  sim.discharge(-5.6, sim.pack.U_empty)
+  sim.discharge(-5.6, sim.battery.pack.U_empty)
   sim.sleep(3600)
-  #sim.charge(+4.0, sim.pack.U_full)
-  sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  #sim.charge(+4.0, sim.battery.pack.U_full)
+  sim.charge_CC_CV(+4.0, sim.battery.pack.U_full)
   sim.sleep(600)
 
 
@@ -108,8 +108,8 @@ proc test_sleep(sim: Simulation) =
 
 
 var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=4, n_parallel=4, param)
-sim.pack.balancer.I = 0.200
+sim.battery.pack = sim.newPack(n_series=4, n_parallel=4, param)
+sim.battery.balancer.I = 0.200
 
 sim.run(test_cycle, count=200, n_report=10)
 #sim.run(test_EIS)

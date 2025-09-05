@@ -37,7 +37,7 @@ proc test_commute*(sim: Simulation) =
   echo "--- Parking at Home (1h 20m) ---"
   sim.sleep(1 * 3600 + 20 * 60)
   echo "--- Evening Charge ---"
-  sim.charge_CC_CV(+4.0, sim.pack.U_full)
+  sim.charge_CC_CV(+4.0, sim.battery.pack.U_full)
   echo "--- Overnight Rest ---"
   let total_cycle_duration = 24.0 * 3600.0
   let time_into_this_cycle = sim.time mod total_cycle_duration

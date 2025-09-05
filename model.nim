@@ -97,11 +97,14 @@ type
     U_empty*: Voltage
     U_full*: Voltage
     modules*: seq[Module]
+
+  Battery = object
+    pack*: Pack
     balancer*: Balancer
 
   Simulation* = ref object
     pre_hook: proc(sim: Simulation, I_pack: Current)
-    pack*: Pack
+    battery*: Battery
     time*: float
     time_report: int
     steps: int
@@ -287,7 +290,7 @@ proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
   let do_report = sim.cycle_number mod sim.report_every_n == 0
 
-  for module in sim.pack.modules.mitems:
+  for module in sim.battery.pack.modules.mitems:
    
     # Calculate parallel resistance of all cells in the module
     var sum_U_div_R = 0.0
@@ -367,11 +370,11 @@ proc newSimulation*(dt: Interval): Simulation =
 proc balance(sim: Simulation, I_pack: Current) =
   if I_pack > 0.0:
   
-    let U_min = sim.pack.modules.mapIt(it.U).min
-    for module in sim.pack.modules.mitems:
+    let U_min = sim.battery.pack.modules.mapIt(it.U).min
+    for module in sim.battery.pack.modules.mitems:
       let dU = module.U - U_min
       if module.U > 4.1 and dU > 0.02:
-        module.I_balance = - sim.pack.balancer.I
+        module.I_balance = - sim.battery.balancer.I
       else:
         module.I_balance = 0.0
 
