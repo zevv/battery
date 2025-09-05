@@ -108,7 +108,7 @@ proc test_sleep(sim: Simulation) =
 
 
 var sim = newSimulation(10.0)
-sim.battery.pack = sim.newPack(n_series=4, n_parallel=4, param)
+sim.battery.pack.init(sim, n_series=4, n_parallel=4, param)
 sim.battery.balancer.I = 0.200
 
 sim.run(test_cycle, count=200, n_report=10)
