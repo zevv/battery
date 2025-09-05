@@ -1,60 +1,58 @@
 
-import std/[sequtils, tables, strutils, times, options, os, strformat]
+import std/[sequtils, tables, strutils, times, os, strformat]
 import std/[math, random, algorithm, tempfiles, complex]
 
 type 
 
-  Soc = float
-  Soh = float
-  Temperature = float
-  Resistance = float
-  Capacitance = float
-  Voltage = float
-  Current = float
-  Charge = float
-  Power = float
-  Duration = float
-  Interval = float
-  SocTab = seq[Voltage]
-
-  Lowpass = proc(value: float): float
+  Soc* = float
+  Soh* = float
+  Temperature* = float
+  Resistance* = float
+  Capacitance* = float
+  Voltage* = float
+  Current* = float
+  Charge* = float
+  Power* = float
+  Duration* = float
+  Interval* = float
+  SocTab* = seq[Voltage]
 
   Tab[A, B] = seq[(A, B)]
 
-  ArrheniusParam = object
-    A: float # pre-exponential factor, 1/s
-    Ea: float # activation energy, J/mol
+  ArrheniusParam* = object
+    A*: float # pre-exponential factor, 1/s
+    Ea*: float # activation energy, J/mol
 
-  RCParam = object
-    R: Resistance # Ω for electrical
-    C: Capacitance # F for electrical
+  RCParam* = object
+    R*: Resistance # Ω for electrical
+    C*: Capacitance # F for electrical
 
-  RCtParam = object
-    R: Resistance # K/W for thermal
-    C: Capacitance # J/K for thermal
+  RCtParam* = object
+    R*: Resistance # K/W for thermal
+    C*: Capacitance # J/K for thermal
 
-  CellParam = object
-    vendor: string
-    model: string
-    RC_dc: RCParam # DC resistance
-    RC_trans: RCParam # charge transfer
-    RC_diff: seq[RCParam] # diffusion model
-    Q_bol: Charge # nominal capacity at 1C, 3600*Ah
-    I_leak_20: Current # self-discharge current at 20°C
-    soc_tab: SocTab # OCV vs SOC
-    temp_tab: Tab[Temperature, float] # capacity factor vs temperature
-    T_R_tab: Tab[Temperature, float] # resistance factor vs temperature
-    SOH_R_tab: Tab[Soh, float] # resistance factor vs SOH
-    SOC_R_tab: Tab[Soc, float] # resistance factor vs SOC
-    SOC_stress_Tab: Tab[Soc, float] # 'stress' factor vs SOC
-    entropy_tab: Tab[Soc, float] # entropy coefficient vs SOC
-    RCcore: RCtParam # RC thermal model core to case
-    RCcase: RCtParam # RC thermal model case to environment
-    charge_eff: float # nominal charge efficiency
-    peukert: float # Peukert exponent
-    R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
-    ap_static: ArrheniusParam # calendar aging
-    ap_stress: ArrheniusParam # cycling aging
+  CellParam* = object
+    vendor*: string
+    model*: string
+    RC_dc*: RCParam # DC resistance
+    RC_trans*: RCParam # charge transfer
+    RC_diff*: seq[RCParam] # diffusion model
+    Q_bol*: Charge # nominal capacity at 1C, 3600*Ah
+    I_leak_20*: Current # self-discharge current at 20°C
+    soc_tab*: SocTab # OCV vs SOC
+    temp_tab*: Tab[Temperature, float] # capacity factor vs temperature
+    T_R_tab*: Tab[Temperature, float] # resistance factor vs temperature
+    SOH_R_tab*: Tab[Soh, float] # resistance factor vs SOH
+    SOC_R_tab*: Tab[Soc, float] # resistance factor vs SOC
+    SOC_stress_Tab*: Tab[Soc, float] # 'stress' factor vs SOC
+    entropy_tab*: Tab[Soc, float] # entropy coefficient vs SOC
+    RCcore*: RCtParam # RC thermal model core to case
+    RCcase*: RCtParam # RC thermal model case to environment
+    charge_eff*: float # nominal charge efficiency
+    peukert*: float # Peukert exponent
+    R_efficiency_factor*: float # approximates charge efficiency drop for various chemical effects
+    ap_static*: ArrheniusParam # calendar aging
+    ap_stress*: ArrheniusParam # cycling aging
 
   RCModel = object
     R: Resistance
@@ -77,38 +75,38 @@ type
     T_case: Temperature
     I: Current
     I_lowpass: Current
-    U: Voltage # terminal voltage
+    U*: Voltage # terminal voltage
     I_leak: Current
     U_src: Voltage # source voltage (without R0 drop)
-    fd_log: File
+    fd_log*: File
     soh: Soh
     dsoh: float
 
   Module = object
     I_balance: Current
     U: Voltage
-    cells: seq[Cell]
+    cells*: seq[Cell]
 
   Balancer = object
-    I: Current
+    I*: Current
 
   Pack = object
-    U_empty: Voltage
-    U_full: Voltage
-    modules: seq[Module]
-    balancer: Balancer
+    U_empty*: Voltage
+    U_full*: Voltage
+    modules*: seq[Module]
+    balancer*: Balancer
 
-  Simulation = ref object
-    pack: Pack
-    time: float
+  Simulation* = ref object
+    pack*: Pack
+    time*: float
     time_report: int
-    dt: float
+    dt*: float
     cycle_number: int
     report_every_n: int
 
 
-proc Q_from_Ah(Ah: float): Charge = return Ah * 3600.0  
-proc Q_to_Ah(Q: Charge): float = return Q / 3600.0
+proc Q_from_Ah*(Ah: float): Charge = return Ah * 3600.0  
+proc Q_to_Ah*(Q: Charge): float = return Q / 3600.0
 
 
 proc interpolate[A, B](tab: Tab[A, B], x: A): B =
@@ -316,65 +314,9 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   return cell
 
 
-proc newSimulation(dt: Interval): Simulation =
+proc newSimulation*(dt: Interval): Simulation =
   result = new Simulation
   result.dt = dt
-
-
-proc gen_gnuplot(sim: Simulation, fname: string) =
-  let fd = open(fname, fmWrite)
-  proc l(s: string) =
-    fd.write(s & "\n")
-
-  l("#!/usr/bin/gnuplot -p")
-  l("")
-  l("reset")
-  l("set grid")
-  l("set key off")
-  l("set multiplot layout 5, 1")
-  l("set lmargin at screen 0.08")
-  #l("set noxtics")
-  l("# 0 margin between multiplots")
-  l("set tmargin 1")
-  l("set bmargin 1")
-  l("set offsets graph 0, 0, 0.05, 0.05")
-  l("")
-
-  # Emit inline data blocks for all cells
-
-  for mid, module in sim.pack.modules:
-    for cid, cell in module.cells:
-      l(&"$cell_{mid:02}_{cid:02} << EOD")
-      cell.fd_log.setFilePos(0)
-      for line in cell.fd_log.lines:
-        l(line)
-      l("EOD")
-      l("")
-
-  # Emit plotting commands
-
-  proc gen_graph(gs: openArray[tuple[col: int, ylabel: string]], pres: openArray[string]) =
-    var ts: seq[string]
-    for i, g in gs:
-      let lt = if i == 0: "1" else: "2"
-      for mid, module in sim.pack.modules:
-        for cid, cell in module.cells:
-          ts.add(&""" $cell_{mid:02}_{cid:02} u 1:{g.col} w l dt {lt} """ )
-    for pre in pres:
-      l(pre)
-    l(&"""set ylabel "{gs[0].ylabel}"""")
-    l(&"""plot {ts.join(", ")}""")
-    l("")
-
-  gen_graph([ (2, "I (A)",      )], [ "unset yrange" ])
-  gen_graph([ (3, "U (V)",      )], [ "set yrange [2.3:4.4]" ])
-  gen_graph([ (4, "SOC (%)",    )], [ "set yrange [-0.1:1.1]" ])
-  gen_graph([ (5, "T_core (°C)",),
-              (6, "T_case (°C)",)], [ "set yrange [19:30] " ])
-  gen_graph([ (7, "SOH (%)",    )], [ "set yrange [-0.1:1.1]" ])
-
-  fd.write("unset multiplot\n")
-  fd.close()
 
 
 proc report(cell: var Cell) =
@@ -400,7 +342,7 @@ proc balance(sim: Simulation, pack: var Pack) =
       module.I_balance = 0.0
 
 
-proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
+proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
   if I_pack > 0.0:
     sim.balance(sim.pack)
@@ -434,7 +376,7 @@ proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
     sim.time_report += dt.int
 
 
-proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam): Pack =
+proc newPack*(sim: Simulation, n_series: int, n_parallel: int, param: CellParam): Pack =
   result = Pack()
   for i in 0 ..< n_series:
     var module = Module()
@@ -445,251 +387,7 @@ proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam):
   result.U_full = n_series.float * 4.20
 
 
-proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
-  while true:
-    var U = sim.step(I, sim.dt)
-    if U < U_min:
-      return
-    for module in sim.pack.modules:
-      for cell in module.cells:
-        if cell.U < 2.5:
-          return
-
-proc charge(sim: Simulation, I: Current, U_max: Voltage) =
-  while true:
-    var U_pack = sim.step(I, sim.dt)
-    if U_pack > U_max:
-      break
-
-
-proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
-  
-  # PID controller constants for voltage regulation
-  let kP = 0.3
-  let kI = 2.5
-
-  let t_max = sim.time + 6 * 3600
-  var I_pack = I_set
-  var err_int = 0.0
-
-  while I_pack > I_set * 0.05:
-    let I = clamp(I_pack, 0.0, I_set)
-    var U_pack = sim.step(I, sim.dt)
-
-    let err = U_set - U_pack
-    err_int += err * sim.dt
-    err_int = clamp(err_int, -2.0, 2.0)
-  
-    I_pack = (kP * err) + (kI * err_int)
-
-    if sim.time > t_max:
-      raise newException(ValueError, "CC/CV charge timeout")
-    
-
-proc sleep(sim: Simulation, d: Duration) =
-  let t_end = sim.time + d
-  while sim.time < t_end:
-    discard sim.step(0.0, sim.dt)
-
-
-
-let param = CellParam(
-  vendor: "Samsung",
-  model:  "INR18650-32E",
-  RC_dc:      RCParam(R: 0.040),
-  RC_trans: RCParam(R: 0.015, C:  4000.0),
-  RC_diff: @[ 
-    RCParam(R: 0.008, C:    11_200),
-    RCParam(R: 0.006, C:    50_000),
-    RCParam(R: 0.004, C:   240_000),
-    RCParam(R: 0.002, C: 1_200_000),
-  ],
-  RCcore: RCtParam(R: 2.500, C:   150.0),
-  RCcase: RCtParam(R: 5.000, C:    30.0),
-  Q_bol: Q_from_Ah(3.5),
-  I_leak_20: -0.14e-3,
-  soc_tab: @[
-    2.300, 2.500, 2.710, 2.868, 2.972, 3.053, 3.115, 3.168, 3.212, 3.258,
-    3.304, 3.347, 3.386, 3.422, 3.460, 3.484, 3.500, 3.519, 3.545, 3.571,
-    3.594, 3.615, 3.638, 3.659, 3.679, 3.700, 3.722, 3.744, 3.766, 3.786,
-    3.805, 3.823, 3.839, 3.855, 3.873, 3.893, 3.913, 3.932, 3.953, 3.977,
-    4.005, 4.032, 4.055, 4.072, 4.081, 4.086, 4.090, 4.094, 4.100, 4.120,
-    4.150, 4.200, 4.250
-  ],
-  temp_tab: @[
-    (-20.0, 0.60),
-    (-10.0, 0.75),
-    (  0.0, 0.88),
-    ( 25.0, 1.00),
-    ( 40.0, 1.02)
-  ],
-  T_R_tab: @[
-    (-20.0, 3.0),
-    (  0.0, 1.8),
-    ( 25.0, 1.0)
-  ],
-  SOH_R_tab: @[
-    (0.0, 1.5),
-    (0.2, 1.3),
-    (0.4, 1.2),
-    (0.6, 1.1),
-    (0.8, 1.05),
-    (1.0, 1.0)
-  ],
-  SOC_R_tab: @[
-    (0.0, 1.8),
-    (0.1, 1.3),
-    (0.2, 1.1),
-    (0.4, 1.0),
-    (0.6, 1.0),
-    (0.8, 1.15),
-    (0.9, 1.4),
-    (1.0, 1.9)
-  ],
-  SOC_stress_Tab: @[
-    (0.0, 3.0),
-    (0.1, 1.5),
-    (0.2, 1.0),
-    (0.4, 1.0),
-    (0.6, 1.0),
-    (0.8, 1.0),
-    (0.9, 1.5),
-    (1.0, 3.0)
-  ],
-  # file:///home/ico/Downloads/energies-12-02685.pdf, figure 5
-  entropy_tab: @[
-    (0.0,  0.0002),
-    (0.2,  0.0001),
-    (0.5, -0.0001),
-    (0.8, -0.0003),
-    (1.0,  0.0004)
-  ],
-  charge_eff: 0.96,
-  peukert: 1.03,
-  R_efficiency_factor: 5.0,
-  ap_static: ArrheniusParam(
-    A: 5.0,
-    Ea: 55.0e3,
-  ),
-  ap_stress: ArrheniusParam(
-    A: 300,
-    Ea: 54.0e3,
-  )
-)
-
-
-
-proc test_cycle(sim: Simulation) =
-  sim.sleep(600)
-  sim.discharge(-5.6, sim.pack.U_empty)
-  sim.sleep(3600)
-  #sim.charge(+4.0, sim.pack.U_full)
-  sim.charge_CC_CV(+4.0, sim.pack.U_full)
-  sim.sleep(600)
-
-
-proc test_sleep(sim: Simulation) =
-  sim.sleep(24 * 3600)
-
-
-proc test_commute(sim: Simulation) =
-  proc drive(sim: Simulation, I: Current, d: Duration) =
-    let t_end = sim.time + d
-    while sim.time < t_end:
-      discard sim.step(I, sim.dt)
-  proc commute() =
-    var commute_time_remaining = 40 * 60.0
-    for i in 1..5:
-      let drive_t = rand(45.0 .. 90.0)
-      let drive_I = rand(-5.0 .. -3.0)
-      sim.drive(drive_I, drive_t)
-      commute_time_remaining -= drive_t
-      let stop_t = rand(15.0 .. 45.0)
-      sim.drive(rand(0.2 .. 0.5), stop_t)
-      commute_time_remaining -= stop_t
-    let highway_t = 15.0 * 60.0
-    sim.drive(-8.0, highway_t)
-    commute_time_remaining -= highway_t
-    sim.drive(-4.0, 2 * 60)
-    commute_time_remaining -= 2 * 60
-    sim.drive(2.0, 30)
-    commute_time_remaining -= 30
-    sim.drive(0.0, commute_time_remaining)
-  sim.sleep(6 * 3600)
-  echo "--- Morning Commute ---"
-  commute()
-  echo "--- Parking at Work (8h 20m) ---"
-  sim.sleep(8 * 3600 + 20 * 60)
-  echo "--- Afternoon Commute ---"
-  commute()
-  echo "--- Parking at Home (1h 20m) ---"
-  sim.sleep(1 * 3600 + 20 * 60)
-  echo "--- Evening Charge ---"
-  sim.charge_CC_CV(+4.0, sim.pack.U_full)
-  echo "--- Overnight Rest ---"
-  let total_cycle_duration = 24.0 * 3600.0
-  let time_into_this_cycle = sim.time mod total_cycle_duration
-  let remaining_time = total_cycle_duration - time_into_this_cycle
-  if remaining_time > 0:
-    sim.sleep(remaining_time)
-
-
-proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
-  let cycles = 3
-  let steps_per_cycle = 100
-  let steps = cycles * steps_per_cycle
-  let dt = 1.0 / (freq * steps_per_cycle.float)
-  stderr.write(&"EIS {freq:>8.3f} Hz, dt={dt:>6.4g} s, steps={steps}\n")
-  let I_amp = +0.020
-  var Zr = 0.0
-  var Zi = 0.0
-  var n = 0
-  let t_start = sim.time
-  while n < steps:
-    let t = sim.time - t_start
-    let ref_sin = sin(TAU * freq * t)
-    let ref_cos = cos(TAU * freq * t)
-    var U = sim.step(ref_sin * I_amp + I_bias, dt)
-    Zr += U * ref_sin
-    Zi += U * ref_cos
-    inc n
-  let scale = 2.0 / (I_amp * steps.float)
-  Zr *= scale
-  Zi *= scale
-  let pha = arctan2(Zi, Zr) * 180.0 / PI
-  let mag = sqrt(Zr*Zr + Zi*Zi)
-  echo freq, " ", Zr, " ", Zi, " ", mag, " ", pha
-
-
-proc test_EIS_f2(sim: Simulation, freq: float, I_bias: Current) =
-  let w = TAU * freq
-  var Z = complex(param.RC_dc.R)
-  Z += param.RC_trans.R / complex(1.0, w * param.RC_trans.R * param.RC_trans.C)
-  for rc in param.RC_diff:
-    Z += rc.R / complex(1.0, w * rc.R * rc.C)
-  let mag = abs(Z)
-  let pha = arctan2(Z.im, Z.re) * 180.0 / PI
-  echo freq, " ", Z.re, " ", Z.im, " ", mag, " ", pha
-
-
-# https://pubs.acs.org/doi/pdf/10.1021/acsmeasuresciau.2c00070?ref=article_openPDF
-
-proc discharge_time(sim: Simulation, I: Current, t: Duration) =
-  let t_start = sim.time
-  while sim.time < t_start + t:
-    discard sim.step(I, sim.dt)
-
-
-proc test_EIS(sim: Simulation) =
-  let I_bias = -0.001
-  var f = 0.0003
-  sim.discharge_time(I_bias, 180)
-  while f < 100:
-    #sim.charge_CC_CV(+4.0, sim.pack.U_full)
-    sim.test_EIS_f(f, I_bias)
-    f *= 1.5
-
-proc run(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int=1) =
+proc run*(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int=1) =
   sim.report_every_n = max(1, count div n_report)
   for i in 0 ..< count:
     sim.cycle_number = i
@@ -700,16 +398,4 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int
   let minutes = (t mod 3600) div 60
   stderr.write &"Completed {count} cycles, total time {days}d {hours}h {minutes}m\n"
 
-
-for rc in param.RC_diff:
-  let T = rc.R * rc.C
-  stderr.write(&"RC diff: R={rc.R:.3f} Ω, C={rc.C:.1f} F, T={T:.1f} s\n")
-
-var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=4, n_parallel=4, param)
-sim.pack.balancer.I = 0.200
-
-sim.run(test_cycle, count=100, n_report=8)
-#sim.run(test_EIS)
-sim.gen_gnuplot("battery.gp")
 
