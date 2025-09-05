@@ -98,8 +98,16 @@ type
     U_full*: Voltage
     modules*: seq[Module]
 
+  BatteryParam* = object
+    RCt_case*: RCtParam # case to environment
+    RCt_air*: RCtParam # case to environment
+    T_env*: Temperature # ambient temperature
+
   Battery = object
     pack*: Pack
+    param*: BatteryParam
+    RCt_case: RCtModel
+    RCt_air: RCtModel
     balancer*: Balancer
 
   Simulation* = ref object
@@ -205,6 +213,8 @@ proc update_soh(cell: var Cell, dt: Interval) =
 proc update_RCt(m: var RCtModel, rp: RCtParam, P_in: Power, T_out: Temperature, dt: Interval) =
   m.P = (m.T - T_out) / rp.R
   m.T += (P_in - m.P) * dt / rp.C
+  assert(m.T > -20)
+  assert(m.T <  80)
 
 
 proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
@@ -220,8 +230,9 @@ proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
   let P_rev = interpolate(param.entropy_tab, cell.soc) * (cell.RCt_core.T+273.15) * I
   let P_dis = P_R0 + P_R_trans + P_R_diff + P_loss + P_leak + P_rev
 
+  let T_env = cell.sim.battery.RCt_air.T
   update_RCt(cell.RCt_core, param.RCt_core, P_dis, cell.RCt_cell.T, dt)
-  update_RCt(cell.RCt_cell, param.RCt_cell, cell.RCt_core.P, cell.T_env, dt)
+  update_RCt(cell.RCt_cell, param.RCt_cell, cell.RCt_core.P, T_env, dt)
 
 # Timestep the RC equivalent circuit model. Special case for C=0 (pure resistor).
 
@@ -280,8 +291,23 @@ proc update(cell: var Cell, I: Current, dt: Interval) =
 
 
 proc report(cell: var Cell) =
-  let line = &"{cell.sim.time_report / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {cell.RCt_cell.T:>5.3f} {cell.soh:>4.2f}"
+  let T_case = cell.sim.battery.RCt_case.T
+  let line = &"{cell.sim.time_report / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {T_case:>5.3f} {cell.soh:>4.2f}"
   cell.fd_log.writeLine(line)
+
+
+proc update_temperature(battery: var Battery, dt: Interval) =
+  var P_cells = 0.0
+  for module in battery.pack.modules.mitems:
+    for cell in module.cells.mitems:
+      P_cells += cell.RCt_cell.P
+
+  update_RCt(battery.RCt_air, battery.param.RCt_air, 
+             P_cells, battery.RCt_case.T, dt)
+  update_RCt(battery.RCt_case, battery.param.RCt_case, 
+             battery.RCt_air.P, battery.param.T_env, dt)
+
+
 
 proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
@@ -311,7 +337,9 @@ proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
       cell.update(I_cell, dt)
       if do_report:
         cell.report()
-        
+
+  sim.battery.update_temperature(dt)
+
   sim.time += dt
   inc sim.steps
   if do_report:
@@ -348,15 +376,20 @@ proc init(cell: var Cell, sim: Simulation, param: CellParam) =
 
 
 proc init*(pack: var Pack, sim: Simulation, n_series: int, n_parallel: int, param: CellParam) =
-  for i in 0 ..< n_series:
-    var module = Module()
-    for j in 0 ..< n_parallel:
-      var cell = Cell()
+
+  pack.modules = newSeq[Module](n_series)
+  for module in pack.modules.mitems:
+    module.cells = newSeq[Cell](n_parallel)
+    for cell in module.cells.mitems:
       cell.init(sim, param)
-      module.cells.add(cell)
-    pack.modules.add(module)
+
   pack.U_empty = n_series.float * 2.50
   pack.U_full = n_series.float * 4.20
+
+
+proc init*(battery: var Battery, param: BatteryParam) =
+  battery.param = param
+  battery.RCt_case.T = 20.0
 
 
 proc newSimulation*(dt: Interval): Simulation =

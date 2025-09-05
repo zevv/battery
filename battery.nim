@@ -18,8 +18,8 @@ let param = CellParam(
     RCParam(R: 0.004, C:   240_000),
     RCParam(R: 0.002, C: 1_200_000),
   ],
-  RCt_core: RCtParam(R: 2.500, C:   150.0),
-  RCt_cell: RCtParam(R: 5.000, C:    30.0),
+  RCt_core: RCtParam(R: 2.5, C:   150.0),
+  RCt_cell: RCtParam(R: 5.0, C:    30.0),
   Q_bol: Q_from_Ah(3.2),
   I_leak_20: -0.14e-3,
   soc_tab: @[
@@ -91,9 +91,11 @@ let param = CellParam(
   )
 )
 
-# batt_param = BatteryParam(
-#   RCt_case: RCtParam(R: 1.0, C: 250.0),
-# )
+let batt_param = BatteryParam(
+  RCt_air: RCtParam(R: 2.0, C: 10.0),
+  RCt_case: RCtParam(R: 1.0, C: 250.0),
+  T_env: 20.0,
+)
 
 proc test_cycle(sim: Simulation) =
   sim.sleep(600)
@@ -110,7 +112,8 @@ proc test_sleep(sim: Simulation) =
 
 
 
-var sim = newSimulation(10.0)
+var sim = newSimulation(5.0)
+sim.battery.init(batt_param)
 sim.battery.pack.init(sim, n_series=4, n_parallel=4, param)
 sim.battery.balancer.I = 0.200
 
