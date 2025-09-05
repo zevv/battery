@@ -91,6 +91,9 @@ let param = CellParam(
   )
 )
 
+# batt_param = BatteryParam(
+#   RCt_case: RCtParam(R: 1.0, C: 250.0),
+# )
 
 proc test_cycle(sim: Simulation) =
   sim.sleep(600)
