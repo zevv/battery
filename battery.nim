@@ -18,8 +18,8 @@ let param = CellParam(
     RCParam(R: 0.004, C:   240_000),
     RCParam(R: 0.002, C: 1_200_000),
   ],
-  RC_core: RCtParam(R: 2.500, C:   150.0),
-  RC_cell: RCtParam(R: 5.000, C:    30.0),
+  RCt_core: RCtParam(R: 2.500, C:   150.0),
+  RCt_cell: RCtParam(R: 5.000, C:    30.0),
   Q_bol: Q_from_Ah(3.2),
   I_leak_20: -0.14e-3,
   soc_tab: @[

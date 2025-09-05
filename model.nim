@@ -46,8 +46,8 @@ type
     SOC_R_tab*: Tab[Soc, float] # resistance factor vs SOC
     SOC_stress_Tab*: Tab[Soc, float] # 'stress' factor vs SOC
     entropy_tab*: Tab[Soc, float] # entropy coefficient vs SOC
-    RC_core*: RCtParam # RC thermal model core to case
-    RC_cell*: RCtParam # RC thermal model case to environment
+    RCt_core*: RCtParam # RC thermal model core to case
+    RCt_cell*: RCtParam # RC thermal model case to environment
     charge_eff*: float # nominal charge efficiency
     peukert*: float # Peukert exponent
     R_efficiency_factor*: float # approximates charge efficiency drop for various chemical effects
@@ -60,6 +60,10 @@ type
     I_R: Current
     I_C: Current
 
+  RCtModel = object
+    T: Temperature
+    P: Power
+
   Cell = object
     sim: Simulation
     param: CellParam
@@ -70,8 +74,8 @@ type
     Q: Charge # energy taken out
     R: Resistance
     T_env: Temperature
-    T_core: Temperature
-    T_case: Temperature
+    RCt_core: RCtModel
+    RCt_cell: RCtModel
     I_leak: Current
     I: Current
     I_lowpass: Current
@@ -143,7 +147,7 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
 proc update_soc(cell: var Cell) =
 
   # Temperature factor
-  let T_factor = interpolate(cell.param.T_cap_tab, cell.T_core)
+  let T_factor = interpolate(cell.param.T_cap_tab, cell.RCt_core.T)
 
   # Peukert factor
   var P_factor = 1.0
@@ -158,7 +162,7 @@ proc update_soc(cell: var Cell) =
 proc update_R(cell: var Cell) =
   let param = cell.param
 
-  let T_factor = interpolate(param.T_R_tab, cell.T_core)
+  let T_factor = interpolate(param.T_R_tab, cell.RCt_core.T)
   let SOH_factor = interpolate(param.SOH_R_tab, cell.soh)
   let SOC_factor = interpolate(param.SOC_R_tab, cell.soc)
 
@@ -180,19 +184,24 @@ proc update_soh(cell: var Cell, dt: Interval) =
   var soh_rate = 0.0
 
   # 'static' calendar aging
-  soh_rate += -arrhenius(param.ap_static, cell.T_core)
+  soh_rate += -arrhenius(param.ap_static, cell.RCt_core.T)
 
   # Stress factors: power, SOC window
   let I_nominal = cell.param.Q_bol / 3600
   let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
   let soc_stress = interpolate(param.SOC_stress_Tab, cell.soc)
-  let degradation_rate = arrhenius(param.ap_stress, cell.T_core)
+  let degradation_rate = arrhenius(param.ap_stress, cell.RCt_core.T)
   soh_rate += -degradation_rate * power_stress * soc_stress
  
   cell.soh += soh_rate * dt
 
   if cell.soh <= 0.0:
     raise newException(ValueError, "Cell SOH dropped to zero")
+
+
+proc update_RCt(m: var RCtModel, rp: RCtParam, P_in: Power, T_out: Temperature, dt: Interval) =
+  m.P = (m.T - T_out) / rp.R
+  m.T += (P_in - m.P) * dt / rp.C
 
 
 proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
@@ -205,15 +214,11 @@ proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
   let P_R_diff = cell.RC_diff.foldl(a + b.I_R * b.I_R * b.R, 0.0)
   let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
   let P_leak = abs(cell.I_leak) * cell.U
-  let P_rev = interpolate(param.entropy_tab, cell.soc) * (cell.T_core+273.15) * I
+  let P_rev = interpolate(param.entropy_tab, cell.soc) * (cell.RCt_core.T+273.15) * I
   let P_dis = P_R0 + P_R_trans + P_R_diff + P_loss + P_leak + P_rev
 
-  # Thermal model
-  let P_core_to_case = (cell.T_core - cell.T_case) / param.RC_core.R
-  cell.T_core += (P_dis - P_core_to_case) * dt / param.RC_core.C
-  let P_case_to_env = (cell.T_case - cell.T_env) / param.RC_cell.R
-  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.RC_cell.C
-
+  update_RCt(cell.RCt_core, param.RCt_core, P_dis, cell.RCt_cell.T, dt)
+  update_RCt(cell.RCt_cell, param.RCt_cell, cell.RCt_core.P, cell.T_env, dt)
 
 # Timestep the RC equivalent circuit model. Special case for C=0 (pure resistor).
 
@@ -238,7 +243,7 @@ proc update_charge(cell: var Cell, I: Current, dt: Interval) =
     dQ *= dynamic_charge_eff
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
-  cell.I_leak = param.I_leak_20 * pow(2, (cell.T_core - 20.0) / 10.0)
+  cell.I_leak = param.I_leak_20 * pow(2, (cell.RCt_core.T - 20.0) / 10.0)
   dQ += cell.I_leak * dt
 
   cell.Q += dQ
@@ -272,7 +277,7 @@ proc update(cell: var Cell, I: Current, dt: Interval) =
 
 
 proc report(cell: var Cell) =
-  let line = &"{cell.sim.time_report / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f}"
+  let line = &"{cell.sim.time_report / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {cell.RCt_cell.T:>5.3f} {cell.soh:>4.2f}"
   cell.fd_log.writeLine(line)
 
 proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
@@ -315,8 +320,8 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.sim = sim
   cell.param = param
   cell.Q = 0.0
-  cell.T_core = 20.0
-  cell.T_case = 20.0
+  cell.RCt_core.T = 20.0
+  cell.RCt_cell.T = 20.0
   cell.T_env = 20.0
   cell.soh = 1.0
   cell.RC_diff = newSeq[RCModel](len(param.RC_diff))
