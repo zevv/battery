@@ -318,8 +318,7 @@ proc step*(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
     sim.time_report += dt.int
 
 
-proc newCell(sim: Simulation, param: CellParam): Cell =
-  var cell = Cell()
+proc init(cell: var Cell, sim: Simulation, param: CellParam) =
   cell.sim = sim
   cell.param = param
   cell.Q = 0.0
@@ -347,14 +346,14 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.update_R()
   cell.update(0.0, 0.0)
 
-  return cell
-
 
 proc init*(pack: var Pack, sim: Simulation, n_series: int, n_parallel: int, param: CellParam) =
   for i in 0 ..< n_series:
     var module = Module()
     for j in 0 ..< n_parallel:
-      module.cells.add(sim.newCell(param))
+      var cell = Cell()
+      cell.init(sim, param)
+      module.cells.add(cell)
     pack.modules.add(module)
   pack.U_empty = n_series.float * 2.50
   pack.U_full = n_series.float * 4.20
