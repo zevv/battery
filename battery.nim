@@ -36,9 +36,9 @@ type
   CellParam = object
     vendor: string
     model: string
-    RC0: RCParam # DC resistance
-    RC1: RCParam # charge transfer
-    RC2: RCParam # diffusion
+    RC_dc: RCParam # DC resistance
+    RC_trans: RCParam # charge transfer
+    RC_diff: seq[RCParam] # diffusion model
     Q_bol: Charge # nominal capacity at 1C, 3600*Ah
     I_leak_20: Current # self-discharge current at 20°C
     soc_tab: SocTab # OCV vs SOC
@@ -66,9 +66,9 @@ type
     id: int
     sim: Simulation
     param: CellParam
-    RC0: RCModel # DC resistance
-    RC1: RCModel # charge transfer
-    RC2: RCModel # diffusion
+    RC_dc: RCModel # 
+    RC_trans: RCModel # charge transfer
+    RC_diff: seq[RCModel] # diffusion
     Q: Charge # energy taken out
     Q_total: Charge
     R: Resistance
@@ -83,7 +83,6 @@ type
     fd_log: File
     soh: Soh
     dsoh: float
-    log: seq[string]
 
   Module = object
     I_balance: Current
@@ -178,9 +177,11 @@ proc update_R(cell: var Cell) =
   let SOH_factor = cell.SOH_to_R_factor()
   let SOC_factor = cell.SOC_to_R_factor()
 
-  cell.RC0.R = param.RC0.R * T_factor * SOH_factor
-  cell.RC1.R = param.RC1.R * T_factor * SOC_factor * SOH_factor
-  cell.RC2.R = param.RC2.R * T_factor * SOC_factor * SOH_factor
+  cell.RC_dc.R = param.RC_dc.R * T_factor * SOH_factor
+  cell.RC_trans.R = param.RC_trans.R * T_factor * SOC_factor * SOH_factor
+
+  for i, rc in cell.RC_diff.mpairs:
+    rc.R = param.RC_diff[i].R * T_factor * SOC_factor * SOH_factor
 
 
 proc update_soh(cell: var Cell, dt: Interval) =
@@ -215,13 +216,13 @@ proc update_soh(cell: var Cell, dt: Interval) =
 proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
 
   let param = cell.param
-  let P_R0 = I * I * cell.RC0.R
-  let P_R1 = cell.RC1.I_R * cell.RC1.I_R * cell.RC1.R
-  let P_R2 = cell.RC2.I_R * cell.RC2.I_R * cell.RC2.R
+  let P_R0 = I * I * cell.RC_dc.R
+  let P_R_trans = cell.RC_trans.I_R * cell.RC_trans.I_R * cell.RC_trans.R
+  let P_R_diff = cell.RC_diff.foldl(a + b.I_R * b.I_R * b.R, 0.0)
   let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
   let P_leak = abs(cell.I_leak) * cell.U
   let P_rev = interpolate(param.entropy_tab, cell.get_soc()) * (cell.T_core+273.15) * I
-  let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak + P_rev
+  let P_dis = P_R0 + P_R_trans + P_R_diff + P_loss + P_leak + P_rev
 
   let P_core_to_case = (cell.T_core - cell.T_case) / param.RCcore.R
   cell.T_core += (P_dis - P_core_to_case) * dt / param.RCcore.C
@@ -247,7 +248,7 @@ proc update_charge(cell: var Cell, I: Current, dt: Interval) =
   # Update the cell charge, taking into account the charge efficiency
   var dC = I * dt
   if I > 0.0:
-    let dynamic_charge_eff = param.charge_eff - (cell.RC0.R * param.R_efficiency_factor)
+    let dynamic_charge_eff = param.charge_eff - (cell.RC_dc.R * param.R_efficiency_factor)
     dC *= dynamic_charge_eff
 
   # Calculate leak current; given current is at 20°C, adjust for temperature
@@ -262,8 +263,9 @@ proc update_voltage(cell: var Cell) =
   let param = cell.param
   let soc = cell.get_soc()
   let U_ocv = SOC_to_U(param, soc)
-  cell.U_src = U_ocv + cell.RC1.U + cell.RC2.U
-  cell.U = U_ocv + cell.RC0.U + cell.RC1.U + cell.RC2.U
+  let U_diff = cell.RC_diff.foldl(a + b.U, 0.0)
+  cell.U_src = U_ocv + cell.RC_trans.U + U_diff
+  cell.U = U_ocv + cell.RC_dc.U + cell.RC_trans.U + U_diff
 
 
 proc update(cell: var Cell, I: Current, dt: Interval) =
@@ -272,9 +274,10 @@ proc update(cell: var Cell, I: Current, dt: Interval) =
   cell.I = I
   cell.I_lowpass = (cell.I_lowpass * 0.9) + (I * 0.1)
 
-  update_RC(cell.RC0, param.RC0, I, dt)
-  update_RC(cell.RC1, param.RC1, I, dt)
-  update_RC(cell.RC2, param.RC2, I, dt)
+  update_RC(cell.RC_dc, param.RC_dc, I, dt)
+  update_RC(cell.RC_trans, param.RC_trans, I, dt)
+  for i, rc in cell.RC_diff.mpairs:
+    update_RC(rc, param.RC_diff[i], I, dt)
 
   cell.update_voltage()
   cell.update_charge(I, dt)
@@ -293,6 +296,7 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.T_case = 20.0
   cell.T_env = 20.0
   cell.soh = 1.0
+  cell.RC_diff = newSeq[RCModel](len(param.RC_diff))
 
   let fname = genTempPath("cell", "log")
   cell.fd_log = open(fname, fmReadWrite)
@@ -305,7 +309,7 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
 
   # Deviations
   cell.param.Q_bol *= rand(0.9 .. 1.00)
-  cell.param.RC0.R *= rand(0.95 .. 1.00)
+  cell.param.RC_dc.R *= rand(0.95 .. 1.00)
 
   return cell
 
@@ -407,8 +411,8 @@ proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
     var sum_1_div_R = 0.0
     for cell in module.cells.mitems:
       cell.update_R()
-      sum_U_div_R += cell.U_src / cell.RC0.R
-      sum_1_div_R += 1.0 / cell.RC0.R
+      sum_U_div_R += cell.U_src / cell.RC_dc.R
+      sum_1_div_R += 1.0 / cell.RC_dc.R
 
     # Current in the module is pack current + balancing current
     let I_module = I_pack + module.I_balance
@@ -417,14 +421,14 @@ proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
     # Update each cell in the module with the calculated cell current
     for cell in module.cells.mitems:
-      let I_cell = (module.U - cell.U_src) / cell.RC0.R
+      let I_cell = (module.U - cell.U_src) / cell.RC_dc.R
       cell.update(I_cell, dt)
       if do_report:
         cell.report()
         
   sim.time += dt
   if do_report:
-    sim.time_report = sim.time.int
+    sim.time_report += dt.int
 
 
 proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam): Pack =
@@ -489,9 +493,15 @@ proc sleep(sim: Simulation, d: Duration) =
 let param = CellParam(
   vendor: "Samsung",
   model:  "INR18650-32E",
-  RC0:    RCParam(R: 0.025),
-  RC1:    RCParam(R: 0.015, C:  4000.0),
-  RC2:    RCParam(R: 0.010, C: 30000.0),
+  RC_dc:      RCParam(R: 0.025),
+  RC_trans: RCParam(R: 0.015, C:  4000.0),
+  RC_diff: @[ 
+    RCParam(R: 0.030, C:  30_000),
+    RCParam(R: 0.015, C:  90_000),
+    RCParam(R: 0.008, C: 270_000),
+    RCParam(R: 0.007, C: 810_000),
+    RCParam(R: 0.006, C:1600_000), # τ ≈ 3240s (~54 min)
+  ],
   RCcore: RCtParam(R: 2.500, C:   150.0),
   RCcase: RCtParam(R: 5.000, C:    30.0),
   Q_bol: Q_from_Ah(3.2),
@@ -567,7 +577,7 @@ let param = CellParam(
 
 
 
-proc test1(sim: Simulation) =
+proc test_cycle(sim: Simulation) =
   sim.sleep(600)
   sim.discharge(-8.0, sim.pack.U_empty)
   sim.sleep(3600)
@@ -575,11 +585,12 @@ proc test1(sim: Simulation) =
   sim.charge_CC_CV(+4.0, sim.pack.U_full)
   sim.sleep(600)
 
-proc test2(sim: Simulation) =
+
+proc test_sleep(sim: Simulation) =
   sim.sleep(24 * 3600)
 
 
-proc test3(sim: Simulation) =
+proc test_commute(sim: Simulation) =
   proc drive(sim: Simulation, I: Current, d: Duration) =
     let t_end = sim.time + d
     while sim.time < t_end:
@@ -646,9 +657,10 @@ proc test_EIS_f(sim: Simulation, freq: float) =
 
 proc test_EIS_f2(sim: Simulation, freq: float) =
   let w = TAU * freq
-  let Z_rc1 = param.RC1.R / complex(1.0, w * param.RC1.R * param.RC1.C)
-  let Z_rc2 = param.RC2.R / complex(1.0, w * param.RC2.R * param.RC2.C)
-  let Z = complex(param.RC0.R) + Z_rc1 + Z_rc2
+  var Z = complex(param.RC_dc.R)
+  Z += param.RC_trans.R / complex(1.0, w * param.RC_trans.R * param.RC_trans.C)
+  for rc in param.RC_diff:
+    Z += rc.R / complex(1.0, w * rc.R * rc.C)
   let mag = abs(Z)
   let pha = arctan2(Z.im, Z.re) * 180.0 / PI
   echo freq, " ", Z.re, " ", Z.im, " ", mag, " ", pha
@@ -657,16 +669,12 @@ proc test_EIS_f2(sim: Simulation, freq: float) =
 proc test_EIS(sim: Simulation) =
   var f = 0.0006
   while f < 100:
-    sim.charge(+4.0, sim.pack.U_full)
+    sim.charge_CC_CV(+4.0, sim.pack.U_full)
     sim.sleep(3600)
     sim.test_EIS_f(f)
-    sim.sleep(1800)
     f *= 1.5
 
-proc test4(sim: Simulation) =
-  test_EIS(sim)
-
-proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5) =
+proc run(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int=1) =
   sim.report_every_n = max(1, count div n_report)
   for i in 0 ..< count:
     sim.cycle_number = i
@@ -679,9 +687,10 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
 
 
 var sim = newSimulation(10.0)
-sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
+sim.pack = sim.newPack(n_series=2, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
-sim.run(test4, count=1, n_report=8)
+sim.run(test_cycle, count=300, n_report=3)
+#sim.run(test_EIS)
 sim.gen_gnuplot("battery.gp")
 
