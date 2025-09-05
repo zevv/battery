@@ -1,5 +1,6 @@
 
-import std/[sequtils, tables, strutils, math, times, options, os, strformat, random, algorithm, tempfiles]
+import std/[sequtils, tables, strutils, times, options, os, strformat]
+import std/[math, random, algorithm, tempfiles, complex]
 
 type 
 
@@ -101,6 +102,7 @@ type
   Simulation = ref object
     pack: Pack
     time: float
+    time_report: int
     dt: float
     cycle_number: int
     report_every_n: int
@@ -336,7 +338,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
   for mid, module in sim.pack.modules:
     for cid, cell in module.cells:
-      l(fmt"$cell_{mid:02}_{cid:02} << EOD")
+      l(&"$cell_{mid:02}_{cid:02} << EOD")
       cell.fd_log.setFilePos(0)
       for line in cell.fd_log.lines:
         l(line)
@@ -351,7 +353,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
       let lt = if i == 0: "1" else: "2"
       for mid, module in sim.pack.modules:
         for cid, cell in module.cells:
-          ts.add(&""" $cell_{mid:02}_{cid:02} u {g.col} w l dt {lt} """ )
+          ts.add(&""" $cell_{mid:02}_{cid:02} u 1:{g.col} w l dt {lt} """ )
     for pre in pres:
       l(pre)
     l(&"""set ylabel "{gs[0].ylabel}"""")
@@ -370,16 +372,15 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 
 proc report(cell: var Cell) =
-  if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
-    let line = fmt"{cell.sim.time} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
-    cell.fd_log.writeLine(line)
+  let line = &"{cell.sim.time_report} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
+  cell.fd_log.writeLine(line)
   
     # bitline
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.U {cell.U:f}")
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOC {cell.get_soc():f}")
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.T {cell.T_core:f}")
-    #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.SOH {cell.soh:f}")
+    #cell.fd_log.writeLine(&"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
+    #cell.fd_log.writeLine(&"{cell.sim.time:f} g cell{cell.id}.U {cell.U:f}")
+    #cell.fd_log.writeLine(&"{cell.sim.time:f} g cell{cell.id}.SOC {cell.get_soc():f}")
+    #cell.fd_log.writeLine(&"{cell.sim.time:f} g cell{cell.id}.T {cell.T_core:f}")
+    #cell.fd_log.writeLine(&"{cell.sim.time:f} g cell{cell.id}.SOH {cell.soh:f}")
 
 
 
@@ -393,9 +394,11 @@ proc balance(sim: Simulation, pack: var Pack) =
       module.I_balance = 0.0
 
 
-proc step(sim: Simulation, I_pack: Current): Voltage =
+proc step(sim: Simulation, I_pack: Current, dt: Interval): Voltage =
 
   sim.balance(sim.pack)
+  
+  let do_report = sim.cycle_number mod sim.report_every_n == 0
 
   for module in sim.pack.modules.mitems:
    
@@ -415,10 +418,13 @@ proc step(sim: Simulation, I_pack: Current): Voltage =
     # Update each cell in the module with the calculated cell current
     for cell in module.cells.mitems:
       let I_cell = (module.U - cell.U_src) / cell.RC0.R
-      cell.update(I_cell, sim.dt)
-      cell.report()
+      cell.update(I_cell, dt)
+      if do_report:
+        cell.report()
         
-  sim.time += sim.dt
+  sim.time += dt
+  if do_report:
+    sim.time_report = sim.time.int
 
 
 proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam): Pack =
@@ -434,7 +440,7 @@ proc newPack(sim: Simulation, n_series: int, n_parallel: int, param: CellParam):
 
 proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
   while true:
-    var U = sim.step(I)
+    var U = sim.step(I, sim.dt)
     if U < U_min:
       return
     for module in sim.pack.modules:
@@ -444,7 +450,7 @@ proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
 
 proc charge(sim: Simulation, I: Current, U_max: Voltage) =
   while true:
-    var U_pack = sim.step(I)
+    var U_pack = sim.step(I, sim.dt)
     if U_pack > U_max:
       break
 
@@ -460,7 +466,8 @@ proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
   var err_int = 0.0
 
   while I_pack > I_set * 0.05:
-    var U_pack = sim.step(clamp(I_pack, 0.0, I_set))
+    let I = clamp(I_pack, 0.0, I_set)
+    var U_pack = sim.step(I, sim.dt)
 
     let err = U_set - U_pack
     err_int += err * sim.dt
@@ -475,7 +482,7 @@ proc charge_CC_CV(sim: Simulation, I_set: Current, U_set: Voltage) =
 proc sleep(sim: Simulation, d: Duration) =
   let t_end = sim.time + d
   while sim.time < t_end:
-    discard sim.step(0.0)
+    discard sim.step(0.0, sim.dt)
 
 
 
@@ -576,7 +583,7 @@ proc test3(sim: Simulation) =
   proc drive(sim: Simulation, I: Current, d: Duration) =
     let t_end = sim.time + d
     while sim.time < t_end:
-      discard sim.step(I)
+      discard sim.step(I, sim.dt)
   proc commute() =
     var commute_time_remaining = 40 * 60.0
     for i in 1..5:
@@ -613,6 +620,51 @@ proc test3(sim: Simulation) =
   if remaining_time > 0:
     sim.sleep(remaining_time)
 
+proc test_EIS_f(sim: Simulation, freq: float) =
+  let cycles = 3
+  let steps_per_cycle = 20
+  let steps = cycles * steps_per_cycle
+  let dt = 1.0 / (freq * steps_per_cycle.float)
+  stderr.write(&"EIS {freq:>8.3f} Hz, dt={dt:>6.4g} s, steps={steps}\n")
+  let I_amp = 0.010
+  var Zr = 0.0
+  var Zi = 0.0
+  var n = 0
+  let t_start = sim.time
+  while n < steps:
+    let t = sim.time - t_start
+    let ref_sin = sin(TAU * freq * t)
+    let ref_cos = cos(TAU * freq * t)
+    var U = sim.step(ref_sin * I_amp, dt)
+    Zr  += U * ref_sin / steps.float
+    Zi += U * ref_cos / steps.float
+    inc n
+  let pha = arctan2(Zi, Zr) * 180.0 / PI
+  let mag = sqrt(Zr*Zr + Zi*Zi)
+  echo freq, " ", Zr, " ", Zi, " ", mag, " ", pha
+
+
+proc test_EIS_f2(sim: Simulation, freq: float) =
+  let w = TAU * freq
+  let Z_rc1 = param.RC1.R / complex(1.0, w * param.RC1.R * param.RC1.C)
+  let Z_rc2 = param.RC2.R / complex(1.0, w * param.RC2.R * param.RC2.C)
+  let Z = complex(param.RC0.R) + Z_rc1 + Z_rc2
+  let mag = abs(Z)
+  let pha = arctan2(Z.im, Z.re) * 180.0 / PI
+  echo freq, " ", Z.re, " ", Z.im, " ", mag, " ", pha
+
+
+proc test_EIS(sim: Simulation) =
+  var f = 0.0006
+  while f < 100:
+    sim.charge(+4.0, sim.pack.U_full)
+    sim.sleep(3600)
+    sim.test_EIS_f(f)
+    sim.sleep(1800)
+    f *= 1.5
+
+proc test4(sim: Simulation) =
+  test_EIS(sim)
 
 proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5) =
   sim.report_every_n = max(1, count div n_report)
@@ -623,13 +675,13 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   let days = t div 86400
   let hours = (t mod 86400) div 3600
   let minutes = (t mod 3600) div 60
-  echo fmt"Completed {count} cycles, total time {days}d {hours}h {minutes}m"
+  stderr.write &"Completed {count} cycles, total time {days}d {hours}h {minutes}m\n"
 
 
 var sim = newSimulation(10.0)
 sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
-sim.run(test1, count=1, n_report=8)
+sim.run(test4, count=1, n_report=8)
 sim.gen_gnuplot("battery.gp")
 
