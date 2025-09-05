@@ -25,49 +25,54 @@ type
     Ea: float # activation energy, J/mol
 
   RCParam = object
-    R: Resistance
-    C: Capacitance
+    R: Resistance # Ω for electrical
+    C: Capacitance # F for electrical
+
+  RCtParam = object
+    R: Resistance # K/W for thermal
+    C: Capacitance # J/K for thermal
 
   CellParam = object
     vendor: string
     model: string
-    R0: Resistance
-    R1: Resistance
-    R2: Resistance
-    C1: Capacitance
-    C2: Capacitance
-    Q_bol: Charge
-    I_leak_20: Current
-    soc_tab: SocTab
-    temp_tab: Tab[Temperature, float]
-    T_R_tab: Tab[Temperature, float]
-    SOH_R_tab: Tab[Soh, float]
-    SOC_R_tab: Tab[Soc, float]
-    SOC_stress_Tab: Tab[Soc, float]
-    entropy_tab: Tab[Soc, float]
-    rc_core: RCParam
-    rc_case: RCParam
-    charge_eff: float
-    peukert: float
+    RC0: RCParam # DC resistance
+    RC1: RCParam # charge transfer
+    RC2: RCParam # diffusion
+    Q_bol: Charge # nominal capacity at 1C, 3600*Ah
+    I_leak_20: Current # self-discharge current at 20°C
+    soc_tab: SocTab # OCV vs SOC
+    temp_tab: Tab[Temperature, float] # capacity factor vs temperature
+    T_R_tab: Tab[Temperature, float] # resistance factor vs temperature
+    SOH_R_tab: Tab[Soh, float] # resistance factor vs SOH
+    SOC_R_tab: Tab[Soc, float] # resistance factor vs SOC
+    SOC_stress_Tab: Tab[Soc, float] # 'stress' factor vs SOC
+    entropy_tab: Tab[Soc, float] # entropy coefficient vs SOC
+    RCcore: RCtParam # RC thermal model core to case
+    RCcase: RCtParam # RC thermal model case to environment
+    charge_eff: float # nominal charge efficiency
+    peukert: float # Peukert exponent
     R_efficiency_factor: float # approximates charge efficiency drop for various chemical effects
     ap_static: ArrheniusParam # calendar aging
     ap_stress: ArrheniusParam # cycling aging
 
+  RCModel = object
+    R: Resistance
+    U: Voltage
+    I_R: Current
+    I_C: Current
 
-  CellModel = object
-    R0: Resistance
-    R1: Resistance
-    R2: Resistance
-    U0: Voltage
-    U1: Voltage
-    U2: Voltage
+  RCtModel = object
+    R: Resistance
+    T: Temperature
 
-  Cell = ref object
+  Cell = object
     id: int
     sim: Simulation
     param: CellParam
-    model: CellModel
-    C: Charge # energy taken out
+    RC0: RCModel # DC resistance
+    RC1: RCModel # charge transfer
+    RC2: RCModel # diffusion
+    Q: Charge # energy taken out
     R: Resistance
     Q_total: Charge
     T_env: Temperature
@@ -76,6 +81,7 @@ type
     I: Current
     I_lowpass: Current
     U: Voltage # terminal voltage
+    I_leak: Current
     U_src: Voltage # source voltage (without R0 drop)
     fd_log: File
     soh: Soh
@@ -97,7 +103,7 @@ type
 
   Simulation = ref object
     pack: Pack
-    cells: seq[Cell]
+    cell_count: int
     time: float
     dt: float
     cycle_number: int
@@ -137,7 +143,7 @@ proc get_Q_effective(cell: Cell): Charge =
 
 proc get_soc(cell: Cell): Soc =
   let Q_effective = cell.get_Q_effective()
-  return (Q_effective + cell.C) / Q_effective
+  return (Q_effective + cell.Q) / Q_effective
 
 
 proc T_to_R_factor(cell: Cell): float =
@@ -167,20 +173,19 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
   return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
 
 
-proc update_R(cell: Cell) =
+proc update_R(cell: var Cell) =
   let param = cell.param
 
   let T_factor = cell.T_to_R_factor()
   let SOH_factor = cell.SOH_to_R_factor()
   let SOC_factor = cell.SOC_to_R_factor()
 
-  cell.model.R0 = param.R0 * T_factor * SOH_factor
-  cell.model.R1 = param.R1 * T_factor * SOC_factor * SOH_factor
-  cell.model.R2 = param.R2 * T_factor * SOC_factor * SOH_factor
-  cell.R = cell.model.R0 + cell.model.R1 + cell.model.R2
+  cell.RC0.R = param.RC0.R * T_factor * SOH_factor
+  cell.RC1.R = param.RC1.R * T_factor * SOC_factor * SOH_factor
+  cell.RC2.R = param.RC2.R * T_factor * SOC_factor * SOH_factor
 
 
-proc update_soh(cell: Cell, dt: Interval) =
+proc update_soh(cell: var Cell, dt: Interval) =
   let param = cell.param
 
   # Arrhenius equation to calculate a degradation factor based on the cell's
@@ -209,78 +214,82 @@ proc update_soh(cell: Cell, dt: Interval) =
     raise newException(ValueError, "Cell SOH dropped to zero")
 
 
-proc update_temperature(cell: Cell, P_dis: Power, dt: Interval) =
+proc update_temperature(cell: var Cell, I: Current, dt: Interval) =
+
   let param = cell.param
-  let P_core_to_case = (cell.T_core - cell.T_case) / param.rc_core.R
-  cell.T_core += (P_dis - P_core_to_case) * dt / param.rc_core.C
-  let P_case_to_env = (cell.T_case - cell.T_env) / param.rc_case.R
-  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.rc_case.C
-
-
-proc update(cell: Cell, I: Current, dt: Interval) =
-  let param = cell.param
-
-  # Update the current in the cell. For the peukert calculation a lowpass
-  # filter is used to smooth out short current spikes which can lead to
-  # numerical instabilties in parallel cell configurations.
-  cell.I = I
-  cell.I_lowpass = (cell.I_lowpass * 0.9) + (I * 0.1)
-
-  # Update the equivalent circuit model to calculate dU
-  cell.model.U0 = I * cell.model.R0
-
-  # Update first RC pair (charge transfer)
-  let I_R1 = cell.model.U1 / cell.model.R1
-  let I_C1 = I - I_R1
-  cell.model.U1 += dt * I_C1 / param.C1
-
-  # Update second RC pair (diffusion)
-  let I_R2 = cell.model.U2 / cell.model.R2
-  let I_C2 = I - I_R2
-  cell.model.U2 += dt * I_C2 / param.C2
-
-  # Update the cell charge, taking into account the charge efficiency
-  var dC = I * dt
-  if I > 0.0:
-    let dynamic_charge_eff = param.charge_eff - (cell.model.R0 * param.R_efficiency_factor)
-    dC *= dynamic_charge_eff
-
-  # Calculate leak current; given current is at 20°C, adjust for temperature
-  let I_leak = param.I_leak_20 * pow(2, (cell.T_core - 20.0) / 10.0)
-  dC += I_leak * dt
-
-  cell.C += dC
-  cell.Q_total += abs(dC)
-
-  # Calculate total power dissipation
-  let P_R0 = I * I * cell.model.R0
-  let P_R1 = I_R1 * I_R1 * cell.model.R1
-  let P_R2 = I_R2 * I_R2 * cell.model.R2
+  let P_R0 = I * I * cell.RC0.R
+  let P_R1 = cell.RC1.I_R * cell.RC1.I_R * cell.RC1.R
+  let P_R2 = cell.RC2.I_R * cell.RC2.I_R * cell.RC2.R
   let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
-  let P_leak = abs(I_leak) * cell.U
+  let P_leak = abs(cell.I_leak) * cell.U
   let P_rev = interpolate(param.entropy_tab, cell.get_soc()) * (cell.T_core+273.15) * I
   let P_dis = P_R0 + P_R1 + P_R2 + P_loss + P_leak + P_rev
 
-  cell.update_temperature(P_dis, dt)
+  let P_core_to_case = (cell.T_core - cell.T_case) / param.RCcore.R
+  cell.T_core += (P_dis - P_core_to_case) * dt / param.RCcore.C
+  let P_case_to_env = (cell.T_case - cell.T_env) / param.RCcase.R
+  cell.T_case += (P_core_to_case - P_case_to_env) * dt / param.RCcase.C
 
-  # Update state of health
-  cell.update_soh(dt)
 
-  # Get OCV from SOC
+# Timestep the RC equivalent circuit model. Special case for C=0 (pure resistor).
+
+proc update_RC(rc: var RCModel, rp: RCParam, I: Current, dt: Interval) =
+  if rp.C > 0.0:
+    rc.I_R = rc.U / rp.R
+    rc.I_C = I - rc.I_R
+    rc.U += dt * rc.I_C / rp.C
+  else:
+    rc.I_R = I
+    rc.I_C = 0.0
+    rc.U = I * rc.R
+
+
+proc update_charge(cell: var Cell, I: Current, dt: Interval) =
+  let param = cell.param
+  # Update the cell charge, taking into account the charge efficiency
+  var dC = I * dt
+  if I > 0.0:
+    let dynamic_charge_eff = param.charge_eff - (cell.RC0.R * param.R_efficiency_factor)
+    dC *= dynamic_charge_eff
+
+  # Calculate leak current; given current is at 20°C, adjust for temperature
+  cell.I_leak = param.I_leak_20 * pow(2, (cell.T_core - 20.0) / 10.0)
+  dC += cell.I_leak * dt
+
+  cell.Q += dC
+  cell.Q_total += abs(dC)
+
+
+proc update_voltage(cell: var Cell) =
+  let param = cell.param
   let soc = cell.get_soc()
   let U_ocv = SOC_to_U(param, soc)
-  cell.U_src = U_ocv + cell.model.U1 + cell.model.U2
-  cell.U = U_ocv + cell.model.U0 + cell.model.U1 + cell.model.U2
+  cell.U_src = U_ocv + cell.RC1.U + cell.RC2.U
+  cell.U = U_ocv + cell.RC0.U + cell.RC1.U + cell.RC2.U
+
+
+proc update(cell: var Cell, I: Current, dt: Interval) =
+  let param = cell.param
+
+  cell.I = I
+  cell.I_lowpass = (cell.I_lowpass * 0.9) + (I * 0.1)
+
+  update_RC(cell.RC0, param.RC0, I, dt)
+  update_RC(cell.RC1, param.RC1, I, dt)
+  update_RC(cell.RC2, param.RC2, I, dt)
+
+  cell.update_voltage()
+  cell.update_charge(I, dt)
+  cell.update_temperature(I, dt)
+  cell.update_soh(dt)
 
 
 proc newCell(sim: Simulation, param: CellParam): Cell =
-  var cell = new Cell
-  cell.id = sim.cells.len()
+  var cell = Cell()
+  cell.id = sim.cell_count
   cell.sim = sim
   cell.param = param
-  cell.model = CellModel()
-  cell.C = 0.0
-  cell.R = cell.param.R0 + cell.param.R1 + cell.param.R2
+  cell.Q = 0.0
   cell.T_core = 20.0
   cell.T_case = 20.0
   cell.T_env = 20.0
@@ -293,12 +302,11 @@ proc newCell(sim: Simulation, param: CellParam): Cell =
   cell.update_R()
   cell.update(0.0, 0.0)
 
-  sim.cells.add(cell)
-
   # Deviations
   cell.param.Q_bol *= rand(0.9 .. 1.00)
-  cell.param.R0 *= rand(0.95 .. 1.00)
+  cell.param.RC0.R *= rand(0.95 .. 1.00)
 
+  inc sim.cell_count
   return cell
 
 
@@ -329,8 +337,9 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
     var ts: seq[string]
     for i, g in gs:
       let lt = if i == 0: "1" else: "2"
-      for cell in sim.cells.mitems:
-        ts.add(&""" "/tmp/cell_{cell.id:02}.log" u {g.col} w l dt {lt} """)
+      for module in sim.pack.modules:
+        for cell in module.cells:
+          ts.add(&""" "/tmp/cell_{cell.id:02}.log" u 1:{g.col} w l dt {lt} """)
 
     l("")
     for pre in pres:
@@ -338,12 +347,12 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
     l(&"""set ylabel "{gs[0].ylabel}"""")
     l(&"""plot {ts.join(", ")}""")
 
-  gen_graph([ (1, "I (A)",      )], [ "unset yrange" ])
-  gen_graph([ (2, "U (V)",      )], [ "set yrange [2.3:4.4]" ])
-  gen_graph([ (3, "SOC (%)",    )], [ "set yrange [-0.1:1.1]" ])
-  gen_graph([ (4, "T_core (°C)",),
-              (5, "T_case (°C)",)], [ "set yrange [19:30] " ])
-  gen_graph([ (6, "SOH (%)",    )], [ "set yrange [-0.1:1.1]" ])
+  gen_graph([ (2, "I (A)",      )], [ "unset yrange" ])
+  gen_graph([ (3, "U (V)",      )], [ "set yrange [2.3:4.4]" ])
+  gen_graph([ (4, "SOC (%)",    )], [ "set yrange [-0.1:1.1]" ])
+  gen_graph([ (5, "T_core (°C)",),
+              (6, "T_case (°C)",)], [ "set yrange [19:30] " ])
+  gen_graph([ (7, "SOH (%)",    )], [ "set yrange [-0.1:1.1]" ])
 
   fd.write("unset multiplot\n")
   fd.close()
@@ -351,7 +360,7 @@ proc gen_gnuplot(sim: Simulation, fname: string) =
 
 proc report(cell: Cell) =
   if cell.sim.cycle_number mod cell.sim.report_every_n == 0:
-    let line = fmt"{cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
+    let line = fmt"{cell.sim.time} {cell.I:>4.2f} {cell.U:>6.3f} {cell.get_soc():>4.3f} {cell.T_core:>5.3f} {cell.T_case:>5.3f} {cell.soh:>4.2f} {log10(-cell.dsoh):>g}"
     cell.fd_log.writeLine(line)
 
     #cell.fd_log.writeLine(fmt"{cell.sim.time:f} g cell{cell.id}.I {cell.I:f}")
@@ -383,10 +392,10 @@ proc step(sim: Simulation, I_pack: Current): Voltage =
     # Calculate parallel resistance of all cells in the module
     var sum_U_div_R = 0.0
     var sum_1_div_R = 0.0
-    for cell in module.cells:
+    for cell in module.cells.mitems:
       cell.update_R()
-      sum_U_div_R += cell.U_src / cell.model.R0
-      sum_1_div_R += 1.0 / cell.model.R0
+      sum_U_div_R += cell.U_src / cell.RC0.R
+      sum_1_div_R += 1.0 / cell.RC0.R
 
     # Current in the module is pack current + balancing current
     let I_module = I_pack + module.I_balance
@@ -394,9 +403,9 @@ proc step(sim: Simulation, I_pack: Current): Voltage =
     result += module.U
 
     # Update each cell in the module with the calculated cell current
-    for cell in module.cells:
+    for cell in module.cells.mitems:
       cell.report()
-      let I_cell = (module.U - cell.U_src) / cell.model.R0
+      let I_cell = (module.U - cell.U_src) / cell.RC0.R
       cell.update(I_cell, sim.dt)
         
   sim.time += sim.dt
@@ -418,9 +427,10 @@ proc discharge(sim: Simulation, I: Current, U_min: Voltage) =
     var U = sim.step(I)
     if U < U_min:
       return
-    for cell in sim.cells:
-      if cell.U < 2.5:
-        return
+    for module in sim.pack.modules:
+      for cell in module.cells:
+        if cell.U < 2.5:
+          return
 
 proc charge(sim: Simulation, I: Current, U_max: Voltage) =
   while true:
@@ -462,13 +472,11 @@ proc sleep(sim: Simulation, d: Duration) =
 let param = CellParam(
   vendor: "Samsung",
   model:  "INR18650-32E",
-  R0:     0.025,
-  R1:     0.015,
-  R2:     0.010,
-  C1:  4000.00,
-  C2: 30000.00,
-  rc_core: RCParam(R: 2.5, C: 150.0),
-  rc_case: RCParam(R: 5.0, C:  30.0),
+  RC0:    RCParam(R: 0.025),
+  RC1:    RCParam(R: 0.015, C:  4000.0),
+  RC2:    RCParam(R: 0.010, C: 30000.0),
+  RCcore: RCtParam(R: 2.500, C:   150.0),
+  RCcase: RCtParam(R: 5.000, C:    30.0),
   Q_bol: Q_from_Ah(3.2),
   I_leak_20: -0.14e-3,
   soc_tab: @[
@@ -606,7 +614,6 @@ proc run(sim: Simulation, fn: proc(sim: Simulation), count: int, n_report: int=5
   let hours = (t mod 86400) div 3600
   let minutes = (t mod 3600) div 60
   echo fmt"Completed {count} cycles, total time {days}d {hours}h {minutes}m"
-  echo fmt"SOH range: {sim.cells.mapIt(it.soh).min:.3f} .. {sim.cells.mapIt(it.soh).max:.3f}"
 
 
 var sim = newSimulation(10.0)
@@ -614,5 +621,5 @@ sim.pack = sim.newPack(n_series=6, n_parallel=2, param)
 sim.pack.balancer.I = 0.200
 
 sim.gen_gnuplot("view.gp")
-sim.run(test1, count=500, n_report=8)
+sim.run(test1, count=1, n_report=8)
 
