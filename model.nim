@@ -1,10 +1,7 @@
 
-import std/[sequtils, tables, strutils, times, os, strformat]
-import std/[math, random, algorithm, tempfiles, complex]
+import std/[sequtils, strformat, math]
 
 import types
-import rc
-import cell
 import pack
 import battery
 

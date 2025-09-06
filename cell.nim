@@ -1,6 +1,6 @@
 
-import std/[sequtils, tables, strutils, times, os, strformat]
-import std/[math, random, algorithm, tempfiles, complex]
+import std/[sequtils, strutils, os, strformat]
+import std/[math, random, tempfiles]
 
 import types
 import rc

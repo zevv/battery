@@ -1,7 +1,6 @@
 
 import types
 import rc
-import cell
 import pack
 
 

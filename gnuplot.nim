@@ -1,4 +1,4 @@
-import std / [ os, strformat, sequtils, strutils ]
+import std / [strformat, strutils]
 
 import model
 

@@ -1,5 +1,5 @@
 
-import std / [math, strformat, random, os]
+import std / [math]
 
 import types
 import rc
