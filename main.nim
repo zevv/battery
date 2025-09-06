@@ -102,27 +102,27 @@ let batt_param = BatteryParam(
   T_env: 20.0,
 )
 
-proc test_cycle(sim: Simulation) =
-  sim.sleep(600)
-  sim.discharge(-5.6, sim.battery.pack.U_empty)
-  sim.sleep(3600)
-  #sim.charge(+4.0, sim.battery.pack.U_full)
-  sim.charge_CC_CV(+4.0, sim.battery.pack.U_full)
-  sim.sleep(600)
+proc test_cycle(model: Model) =
+  model.sleep(600)
+  model.discharge(-5.6, model.battery.pack.U_empty)
+  model.sleep(3600)
+  #model.charge(+4.0, model.battery.pack.U_full)
+  model.charge_CC_CV(+4.0, model.battery.pack.U_full)
+  model.sleep(600)
 
 
-proc test_sleep(sim: Simulation) =
-  sim.sleep(24 * 3600)
+proc test_sleep(model: Model) =
+  model.sleep(24 * 3600)
 
 
+block:
+  var model = newModel(5.0)
+  model.battery.init(batt_param)
+  model.battery.pack.init(n_series=4, n_parallel=4, param)
+  model.battery.balancer.I = 0.200
 
+  model.run(test_cycle, count=1, n_report=1)
+  #model.run(test_EIS)
+  #model.run(test_commute)
+  model.gen_gnuplot("battery.gp")
 
-var sim = newSimulation(5.0)
-sim.battery.init(batt_param)
-sim.battery.pack.init(n_series=4, n_parallel=4, param)
-sim.battery.balancer.I = 0.200
-
-sim.run(test_cycle, count=1, n_report=1)
-#sim.run(test_EIS)
-#sim.run(test_commute)
-sim.gen_gnuplot("battery.gp")

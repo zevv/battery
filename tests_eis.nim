@@ -4,7 +4,7 @@ import std / [math, strformat]
 import types
 import model
 
-proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
+proc test_EIS_f(model: Model, freq: float, I_bias: Current) =
   let cycles = 3
   let steps_per_cycle = 100
   let steps = cycles * steps_per_cycle
@@ -14,12 +14,12 @@ proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
   var Zr = 0.0
   var Zi = 0.0
   var n = 0
-  let t_start = sim.time
+  let t_start = model.time
   while n < steps:
-    let t = sim.time - t_start
+    let t = model.time - t_start
     let ref_sin = sin(TAU * freq * t)
     let ref_cos = cos(TAU * freq * t)
-    var U = sim.step(ref_sin * I_amp + I_bias, dt)
+    var U = model.step(ref_sin * I_amp + I_bias, dt)
     Zr += U * ref_sin
     Zi += U * ref_cos
     inc n
@@ -31,7 +31,7 @@ proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
   echo freq, " ", Zr, " ", Zi, " ", mag, " ", pha
 
 
-#proc test_EIS_f2(sim: Simulation, freq: float, I_bias: Current) =
+#proc test_EIS_f2(model: Model, freq: float, I_bias: Current) =
 #  let w = TAU * freq
 #  var Z = complex(param.RC_dc.R)
 #  Z += param.RC_trans.R / complex(1.0, w * param.RC_trans.R * param.RC_trans.C)
@@ -44,19 +44,19 @@ proc test_EIS_f(sim: Simulation, freq: float, I_bias: Current) =
 
 # https://pubs.acs.org/doi/pdf/10.1021/acsmeasuresciau.2c00070?ref=article_openPDF
 
-proc discharge_time(sim: Simulation, I: Current, t: Duration) =
-  let t_start = sim.time
-  while sim.time < t_start + t:
-    discard sim.step(I, sim.dt)
+proc discharge_time(model: Model, I: Current, t: Duration) =
+  let t_start = model.time
+  while model.time < t_start + t:
+    discard model.step(I, model.dt)
 
 
-proc test_EIS*(sim: Simulation) =
+proc test_EIS*(model: Model) =
   let I_bias = -0.001
   var f = 0.0003
-  sim.discharge_time(I_bias, 180)
+  model.discharge_time(I_bias, 180)
   while f < 100:
-    #sim.charge_CC_CV(+4.0, sim.pack.U_full)
-    sim.test_EIS_f(f, I_bias)
+    #model.charge_CC_CV(+4.0, model.pack.U_full)
+    model.test_EIS_f(f, I_bias)
     f *= 1.5
 
 

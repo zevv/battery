@@ -10,8 +10,8 @@ import battery
 
 type 
 
-  Simulation* = ref object
-    pre_hook: proc(sim: Simulation, I_pack: Current)
+  Model* = ref object
+    pre_hook: proc(model: Model, I_pack: Current)
     battery*: Battery
     time*: float
     time_report: float
@@ -21,52 +21,52 @@ type
     report_every_n: int
 
 
-proc step*(sim: Simulation, I: Current, dt: Interval): Voltage =
+proc step*(model: Model, I: Current, dt: Interval): Voltage =
 
-  if sim.pre_hook != nil:
-    sim.pre_hook(sim, I)
+  if model.pre_hook != nil:
+    model.pre_hook(model, I)
 
-  let U_batt = sim.battery.step(I, dt)
+  let U_batt = model.battery.step(I, dt)
 
-  if sim.cycle_number mod sim.report_every_n == 0:
-    sim.battery.report(sim.time_report)
-    sim.time_report += dt
+  if model.cycle_number mod model.report_every_n == 0:
+    model.battery.report(model.time_report)
+    model.time_report += dt
 
-  sim.time += dt
-  inc sim.steps
+  model.time += dt
+  inc model.steps
 
   U_batt
 
 
-proc newSimulation*(dt: Interval): Simulation =
-  result = new Simulation
+proc newModel*(dt: Interval): Model =
+  result = new Model
   result.dt = dt
 
 
-proc balance(sim: Simulation, I_pack: Current) =
+proc balance(model: Model, I_pack: Current) =
   if I_pack > 0.0:
   
-    let U_min = sim.battery.pack.modules.mapIt(it.U).min
-    for module in sim.battery.pack.modules.mitems:
+    let U_min = model.battery.pack.modules.mapIt(it.U).min
+    for module in model.battery.pack.modules.mitems:
       let dU = module.U - U_min
       if module.U > 4.1 and dU > 0.02:
-        module.I_balance = - sim.battery.balancer.I
+        module.I_balance = - model.battery.balancer.I
       else:
         module.I_balance = 0.0
 
 
-proc run*(sim: Simulation, fn: proc(sim: Simulation), count: int=1, n_report: int=1) =
+proc run*(model: Model, fn: proc(model: Model), count: int=1, n_report: int=1) =
 
-  sim.pre_hook = balance
-  sim.report_every_n = max(1, count div n_report)
+  model.pre_hook = balance
+  model.report_every_n = max(1, count div n_report)
 
   for i in 0 ..< count:
-    sim.cycle_number = i
-    fn(sim)
-  let t = sim.time.int
+    model.cycle_number = i
+    fn(model)
+  let t = model.time.int
   let days = t div 86400
   let hours = (t mod 86400) div 3600
   let minutes = (t mod 3600) div 60
-  stderr.write &"Completed {count} cycles, {sim.steps} steps, total time {days}d {hours}h {minutes}m\n"
+  stderr.write &"Completed {count} cycles, {model.steps} steps, total time {days}d {hours}h {minutes}m\n"
 
 
