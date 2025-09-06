@@ -1,6 +1,7 @@
 
 import std/[ random, math ]
 
+import types
 import model
 import misc
 

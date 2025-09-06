@@ -1,4 +1,5 @@
 
+import types
 import model
 
 proc discharge*(sim: Simulation, I: Current, U_min: Voltage) =

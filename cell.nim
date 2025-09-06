@@ -165,7 +165,7 @@ proc update_voltage(cell: var Cell) =
   cell.U = U_ocv + cell.RC_dc.U + cell.RC_trans.U + U_diff
 
 
-proc update*(cell: var Cell, I: Current, T_env: Temperature, dt: Interval) =
+proc step*(cell: var Cell, I: Current, T_env: Temperature, dt: Interval) =
   let param = cell.param
 
   cell.I = I
@@ -183,6 +183,36 @@ proc update*(cell: var Cell, I: Current, T_env: Temperature, dt: Interval) =
   cell.update_soh(dt)
 
 
-proc report*(cell: var Cell, time: float, T_case: Temperature) =
+proc report*(cell: Cell, time: float, T_case: Temperature) =
   let line = &"{time / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {T_case:>5.3f} {cell.soh:>4.2f}"
   cell.fd_log.writeLine(line)
+
+
+proc init*(cell: var Cell, param: CellParam) =
+  cell.param = param
+  cell.Q = 0.0
+  cell.RCt_core.T = 20.0
+  cell.RCt_cell.T = 20.0
+  cell.T_env = 20.0
+  cell.soh = 1.0
+  cell.RC_diff = newSeq[RCModel](len(param.RC_diff))
+  
+  # Deviations 
+  cell.param.Q_bol *= gauss(1.0, 0.01)
+  cell.param.RC_dc.R *= gauss(1.0, 0.05)
+  cell.param.I_leak_20 *= gauss(1.0, 0.30)
+  cell.param.ap_static.A *= gauss(1.0, 0.05)
+  cell.param.ap_static.Ea *= gauss(1.0, 0.05)
+  cell.param.ap_stress.A *= gauss(1.0, 0.05)
+  cell.param.ap_stress.Ea *= gauss(1.0, 0.05)
+
+  # Open log file
+  let fname = genTempPath("cell", "log")
+  cell.fd_log = open(fname, fmReadWrite)
+  removeFile(fname)
+  
+  # Run one step to initialize cell state
+  cell.update_R()
+  cell.step(0.0, 20.0, 0.0)
+
+
