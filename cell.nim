@@ -197,7 +197,7 @@ proc get_P_heat*(cell: Cell): Power =
 
 proc init*(cell: var Cell, param: CellParam) =
   cell.param = param
-  cell.Q = 0.0
+  cell.Q = -param.Q_bol * 0.5
   cell.RCt_core.T = 20.0
   cell.RCt_cell.T = 20.0
   cell.soh = 1.0

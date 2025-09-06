@@ -99,8 +99,8 @@ let cell_param = CellParam(
 
 let balancer_param = BalancerParam(
   I: -0.050,
-  U_min: 4.10,
-  U_max: 4.20,
+  U_min: 3.60,
+  U_max: 4.30,
   U_delta: 0.02
 )
 
@@ -132,7 +132,7 @@ block:
   var model = newModel(dt=5.0)
   model.battery.init(batt_param)
 
-  model.run(test_cycle, count=2, n_report=10)
+  model.run(test_cycle, count=10, n_report=10)
   #model.run(test_EIS)
   #model.run(test_commute)
   model.gen_gnuplot("battery.gp")
