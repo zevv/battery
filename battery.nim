@@ -40,7 +40,7 @@ proc step*(battery: var Battery, I: Current, dt: Interval): Voltage =
   battery.update_temperature(dt)
 
   let Us = battery.pack.get_U_cells()
-  let Is = battery.balancer.step(Us)
+  let Is = battery.balancer.step(I, Us)
   battery.pack.set_I_balance(Is)
 
   U_pack

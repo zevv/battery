@@ -98,7 +98,7 @@ let cell_param = CellParam(
 )
 
 let balancer_param = BalancerParam(
-  I: -0.100,
+  I: -0.050,
   U_min: 4.10,
   U_max: 4.20,
   U_delta: 0.02
