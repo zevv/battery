@@ -64,11 +64,11 @@ proc get_P_heat*(pack: Pack): Power =
   P_cells
 
 
-proc get_U_cells(pack: Pack): seq[Voltage] =
+proc get_U_cells*(pack: Pack): seq[Voltage] =
   pack.modules.mapIt(it.U)
 
 
-proc set_I_balance(pack: var Pack, I: seq[Current]) =
+proc set_I_balance*(pack: var Pack, I: seq[Current]) =
   for i, module in pack.modules.mpairs:
     module.I_balance = I[i]
 

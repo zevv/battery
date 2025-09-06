@@ -14,8 +14,8 @@ proc discharge*(model: Model, I: Current, U_min: Voltage) =
 
 proc charge*(model: Model, I: Current, U_max: Voltage) =
   while true:
-    var U_pack = model.step(I, model.dt)
-    if U_pack > U_max:
+    var U = model.step(I, model.dt)
+    if U > U_max:
       break
 
 
@@ -31,9 +31,9 @@ proc charge_CC_CV*(model: Model, I_set: Current, U_set: Voltage) =
 
   while I_pack > I_set * 0.05:
     let I = clamp(I_pack, 0.0, I_set)
-    var U_pack = model.step(I, model.dt)
+    var U = model.step(I, model.dt)
 
-    let err = U_set - U_pack
+    let err = U_set - U
     err_int += err * model.dt
     err_int = clamp(err_int, -2.0, 2.0)
   

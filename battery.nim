@@ -2,12 +2,9 @@
 import types
 import rc
 import pack
-
+import balancer
 
 type 
-
-  Balancer = object
-    I*: Current
 
   BatteryParam* = object
     RCt_case*: RCtParam # case to environment
@@ -32,8 +29,15 @@ proc update_temperature(battery: var Battery, dt: Interval) =
 
 
 proc step*(battery: var Battery, I: Current, dt: Interval): Voltage =
+ 
   let U_pack = battery.pack.step(I, battery.RCt_air.T, dt)
+
   battery.update_temperature(dt)
+
+  let Us = battery.pack.get_U_cells()
+  let Is = battery.balancer.step(Us)
+  battery.pack.set_I_balance(Is)
+
   U_pack
 
 
@@ -44,4 +48,3 @@ proc report*(battery: Battery, t: Interval) =
 proc init*(battery: var Battery, param: BatteryParam) =
   battery.param = param
   battery.RCt_case.T = 20.0
-

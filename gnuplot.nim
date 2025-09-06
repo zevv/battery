@@ -11,6 +11,7 @@ proc gen_gnuplot*(model: Model, fname: string) =
   l("")
   l("reset")
   l("set grid")
+  l("set term x11 1 noraise")
   l("set key off")
   l("set multiplot layout 5, 1")
   l("set lmargin at screen 0.08")
