@@ -35,7 +35,7 @@ type
     ap_stress*: ArrheniusParam # cycling aging
 
   Cell* = object
-    param*: CellParam
+    param: CellParam
     fd_log*: File
     RC_dc*: RCModel # 
     RC_trans*: RCModel # charge transfer
@@ -187,6 +187,9 @@ proc report*(cell: Cell, time: float, T_case: Temperature) =
   let line = &"{time / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {T_case:>5.3f} {cell.soh:>4.2f}"
   cell.fd_log.writeLine(line)
 
+
+proc get_R_dc*(cell: Cell): Resistance =
+  return cell.RC_dc.R
 
 proc init*(cell: var Cell, param: CellParam) =
   cell.param = param

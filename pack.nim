@@ -30,6 +30,8 @@ proc init*(pack: var Pack, n_series: int, n_parallel: int, param: CellParam) =
 
 proc step*(pack: var Pack, I_pack: Current, T: Temperature, dt: Interval): Voltage =
 
+  var U_pack = 0.0
+
   for module in pack.modules.mitems:
    
     # Calculate parallel resistance of all cells in the module
@@ -37,18 +39,20 @@ proc step*(pack: var Pack, I_pack: Current, T: Temperature, dt: Interval): Volta
     var sum_1_div_R = 0.0
     for cell in module.cells.mitems:
       cell.update_R()
-      sum_U_div_R += cell.U_src / cell.RC_dc.R
-      sum_1_div_R += 1.0 / cell.RC_dc.R
+      sum_U_div_R += cell.U_src / cell.get_R_dc()
+      sum_1_div_R += 1.0 / cell.get_R_dc()
 
     # Current in the module is pack current + balancing current
     let I_module = I_pack + module.I_balance
     module.U = (I_module + sum_U_div_R) / sum_1_div_R
-    result += module.U
+    U_pack += module.U
 
     # Update each cell in the module with the calculated cell current
     for cell in module.cells.mitems:
-      let I_cell = (module.U - cell.U_src) / cell.RC_dc.R
+      let I_cell = (module.U - cell.U_src) / cell.get_R_dc()
       cell.step(I_cell, T, dt)
+
+  U_pack
 
 
 proc report*(pack: Pack, t: Interval, T_env: Temperature) =

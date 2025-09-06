@@ -41,8 +41,8 @@ proc step*(battery: var Battery, I: Current, dt: Interval): Voltage =
   U_pack
 
 
-proc report*(battery: Battery, t: Interval, T_env: Temperature) =
-  battery.pack.report(t, T_env)
+proc report*(battery: Battery, t: Interval) =
+  battery.pack.report(t, battery.RCt_case.T)
 
 
 proc init*(battery: var Battery, param: BatteryParam) =

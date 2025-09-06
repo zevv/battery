@@ -29,7 +29,7 @@ proc step*(sim: Simulation, I: Current, dt: Interval): Voltage =
   let U_batt = sim.battery.step(I, dt)
 
   if sim.cycle_number mod sim.report_every_n == 0:
-    sim.battery.report(sim.time_report, sim.battery.RCt_case.T)
+    sim.battery.report(sim.time_report)
     sim.time_report += dt
 
   sim.time += dt
