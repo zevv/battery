@@ -1,21 +1,26 @@
 
 import types
 import rc
+import cell
 import pack
 import balancer
 
 type 
 
   BatteryParam* = object
+    RCt_air*: RCtParam # air to case
     RCt_case*: RCtParam # case to environment
-    RCt_air*: RCtParam # case to environment
     T_env*: Temperature # ambient temperature
+    n_series*: int
+    n_parallel*: int
+    cell_param*: CellParam
+    balancer_param*: BalancerParam
 
   Battery* = object
     pack*: Pack
     param*: BatteryParam
-    RCt_case*: RCtModel
     RCt_air*: RCtModel
+    RCt_case*: RCtModel
     balancer*: Balancer
 
 
@@ -48,3 +53,6 @@ proc report*(battery: Battery, t: Interval) =
 proc init*(battery: var Battery, param: BatteryParam) =
   battery.param = param
   battery.RCt_case.T = 20.0
+
+  battery.pack.init(param.n_series, param.n_parallel, param.cell_param)
+  battery.balancer.init(param.n_series, param.balancer_param)

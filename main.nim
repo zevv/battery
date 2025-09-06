@@ -13,7 +13,7 @@ import tests_eis
 import tests_commute
 import gnuplot
 
-let param = CellParam(
+let cell_param = CellParam(
   vendor:   "Samsung",
   model:    "INR18650-32E",
   RC_dc:    RCParam(R: 0.040),
@@ -97,17 +97,21 @@ let param = CellParam(
   )
 )
 
-let batt_param = BatteryParam(
-  RCt_air: RCtParam(R: 2.0, C: 10.0),
-  RCt_case: RCtParam(R: 1.0, C: 250.0),
-  T_env: 20.0,
-)
-
 let balancer_param = BalancerParam(
   I: -0.100,
   U_min: 4.10,
   U_max: 4.20,
   U_delta: 0.02
+)
+
+let batt_param = BatteryParam(
+  n_series: 4,
+  n_parallel: 4,
+  RCt_air: RCtParam(R: 2.0, C: 10.0),
+  RCt_case: RCtParam(R: 1.0, C: 250.0),
+  T_env: 20.0,
+  cell_param: cell_param,
+  balancer_param: balancer_param,
 )
 
 
@@ -125,10 +129,8 @@ proc test_sleep(model: Model) =
 
 
 block:
-  var model = newModel(5.0)
+  var model = newModel(dt=5.0)
   model.battery.init(batt_param)
-  model.battery.balancer.init(4, balancer_param)
-  model.battery.pack.init(n_series=4, n_parallel=4, param)
 
   model.run(test_cycle, count=200, n_report=4)
   #model.run(test_EIS)
