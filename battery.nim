@@ -24,13 +24,10 @@ type
 
 
 proc update_temperature(battery: var Battery, dt: Interval) =
-  var P_cells = 0.0
-  for module in battery.pack.modules.mitems:
-    for cell in module.cells.mitems:
-      P_cells += cell.RCt_cell.P
+  var P_pack = battery.pack.get_P_heat()
 
   battery.RCt_air.update(battery.param.RCt_air, 
-             P_cells, battery.RCt_case.T, dt)
+             P_pack, battery.RCt_case.T, dt)
   battery.RCt_case.update(battery.param.RCt_case, 
              battery.RCt_air.P, battery.param.T_env, dt)
 

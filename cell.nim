@@ -38,20 +38,19 @@ type
     param: CellParam
     fd_log*: File
     RC_dc*: RCModel # 
-    RC_trans*: RCModel # charge transfer
-    RC_diff*: seq[RCModel] # diffusion
-    Q*: Charge # energy taken out
-    R*: Resistance
-    T_env*: Temperature
-    RCt_core*: RCtModel
-    RCt_cell*: RCtModel
-    I_leak*: Current
-    I*: Current
-    I_lowpass*: Current
-    soc*: Soc
+    RC_trans: RCModel # charge transfer
+    RC_diff: seq[RCModel] # diffusion
+    Q: Charge # energy taken out
+    R: Resistance
+    RCt_core: RCtModel
+    RCt_cell: RCtModel
+    I_leak: Current
+    I: Current
+    I_lowpass: Current
+    soc: Soc
     U*: Voltage # terminal voltage
     U_src*: Voltage # source voltage (without R0 drop)
-    soh*: Soh
+    soh: Soh
 
 
 proc SOC_to_U(cp: CellParam, soc: Soc): float =
@@ -191,12 +190,16 @@ proc report*(cell: Cell, time: float, T_case: Temperature) =
 proc get_R_dc*(cell: Cell): Resistance =
   return cell.RC_dc.R
 
+
+proc get_P_heat*(cell: Cell): Power =
+  cell.RCt_cell.P
+
+
 proc init*(cell: var Cell, param: CellParam) =
   cell.param = param
   cell.Q = 0.0
   cell.RCt_core.T = 20.0
   cell.RCt_cell.T = 20.0
-  cell.T_env = 20.0
   cell.soh = 1.0
   cell.RC_diff = newSeq[RCModel](len(param.RC_diff))
   

@@ -1,4 +1,5 @@
 
+import std / [math, sequtils]
 import types
 import cell
 
@@ -53,6 +54,23 @@ proc step*(pack: var Pack, I_pack: Current, T: Temperature, dt: Interval): Volta
       cell.step(I_cell, T, dt)
 
   U_pack
+
+
+proc get_P_heat*(pack: Pack): Power =
+  var P_cells = 0.0
+  for module in pack.modules:
+    for cell in module.cells:
+      P_cells += cell.get_P_heat()
+  P_cells
+
+
+proc get_U_cells(pack: Pack): seq[Voltage] =
+  pack.modules.mapIt(it.U)
+
+
+proc set_I_balance(pack: var Pack, I: seq[Current]) =
+  for i, module in pack.modules.mpairs:
+    module.I_balance = I[i]
 
 
 proc report*(pack: Pack, t: Interval, T_env: Temperature) =
