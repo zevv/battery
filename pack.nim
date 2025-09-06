@@ -25,7 +25,7 @@ proc init*(pack: var Pack, n_series: int, n_parallel: int, param: CellParam) =
     for cell in module.cells.mitems:
       cell.init(param)
 
-  pack.U_empty = n_series.float * 3.00
+  pack.U_empty = n_series.float * 2.75
   pack.U_full = n_series.float * 4.20
 
 

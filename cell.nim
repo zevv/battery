@@ -183,7 +183,7 @@ proc step*(cell: var Cell, I: Current, T_env: Temperature, dt: Interval) =
 
 
 proc report*(cell: Cell, time: float, T_case: Temperature) =
-  let line = &"{time / 60} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {T_case:>5.3f} {cell.soh:>4.2f}"
+  let line = &"{time} {cell.I:>4.2f} {cell.U:>6.3f} {cell.soc:>4.3f} {cell.RCt_core.T:>5.3f} {T_case:>5.3f} {cell.soh:>4.2f}"
   cell.fd_log.writeLine(line)
 
 
@@ -208,9 +208,9 @@ proc init*(cell: var Cell, param: CellParam) =
   cell.param.RC_dc.R *= gauss(1.0, 0.05)
   cell.param.I_leak_20 *= gauss(1.0, 0.30)
   cell.param.ap_static.A *= gauss(1.0, 0.05)
-  cell.param.ap_static.Ea *= gauss(1.0, 0.05)
+  cell.param.ap_static.Ea *= gauss(1.0, 0.02)
   cell.param.ap_stress.A *= gauss(1.0, 0.05)
-  cell.param.ap_stress.Ea *= gauss(1.0, 0.05)
+  cell.param.ap_stress.Ea *= gauss(1.0, 0.02)
 
   # Open log file
   let fname = genTempPath("cell", "log")

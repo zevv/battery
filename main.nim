@@ -132,7 +132,7 @@ block:
   var model = newModel(dt=5.0)
   model.battery.init(batt_param)
 
-  model.run(test_cycle, count=10, n_report=10)
+  model.run(test_cycle, count=200, n_report=10)
   #model.run(test_EIS)
   #model.run(test_commute)
   model.gen_gnuplot("battery.gp")
