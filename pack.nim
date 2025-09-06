@@ -26,7 +26,7 @@ proc init*(pack: var Pack, n_series: int, n_parallel: int, param: CellParam) =
       cell.init(param)
 
   pack.U_empty = n_series.float * 2.75
-  pack.U_full = n_series.float * 4.20
+  pack.U_full = n_series.float * 4.15
 
 
 proc step*(pack: var Pack, I_pack: Current, T: Temperature, dt: Interval): Voltage =

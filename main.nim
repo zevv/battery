@@ -55,15 +55,19 @@ let cell_param = CellParam(
     (0.8, 1.05),
     (1.0, 1.0)
   ],
+  # EVE INR21700-50E Test Report
   SOC_R_tab: @[
-    (0.0, 1.8),
-    (0.1, 1.3),
-    (0.2, 1.1),
-    (0.4, 1.0),
-    (0.6, 1.0),
-    (0.8, 1.15),
-    (0.9, 1.4),
-    (1.0, 1.9)
+    (0.0, 3.95),
+    (0.1, 1.52),
+    (0.2, 1.11),
+    (0.3, 1.02),
+    (0.4, 1.00),
+    (0.5, 1.01),
+    (0.6, 1.06),
+    (0.7, 1.05),
+    (0.8, 1.05),
+    (0.9, 1.04),
+    (1.0, 1.29),
   ],
   SOC_stress_Tab: @[
     (0.0, 3.0),
@@ -98,7 +102,7 @@ let cell_param = CellParam(
 )
 
 let balancer_param = BalancerParam(
-  I: -0.050,
+  I: -0.100,
   U_min: 3.60,
   U_max: 4.30,
   U_delta: 0.02
@@ -132,7 +136,7 @@ block:
   var model = newModel(dt=5.0)
   model.battery.init(batt_param)
 
-  model.run(test_cycle, count=200, n_report=10)
+  model.run(test_cycle, count=100, n_report=10)
   #model.run(test_EIS)
   #model.run(test_commute)
   model.gen_gnuplot("battery.gp")
