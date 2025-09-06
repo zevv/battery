@@ -40,7 +40,8 @@ proc charge_CC_CV*(model: Model, I_set: Current, U_set: Voltage) =
     I_pack = (kP * err) + (kI * err_int)
 
     if model.time > t_max:
-      raise newException(ValueError, "CC/CV charge timeout")
+      return
+      #raise newException(ValueError, "CC/CV charge timeout")
     
 
 proc sleep*(model: Model, d: Duration) =

@@ -19,7 +19,7 @@ type
 
 proc step*(model: Model, I: Current, dt: Interval): Voltage =
 
-  let U_batt = model.battery.step(I, dt)
+  model.battery.step(I, dt)
 
   if model.cycle_number mod model.report_every_n == 0:
     model.battery.report(model.time_report)
@@ -28,7 +28,7 @@ proc step*(model: Model, I: Current, dt: Interval): Voltage =
   model.time += dt
   inc model.steps
 
-  U_batt
+  model.battery.U
 
 
 proc newModel*(dt: Interval): Model =
@@ -43,6 +43,7 @@ proc run*(model: Model, fn: proc(model: Model), count: int=1, n_report: int=1) =
   let t_start = epochTime()
   for i in 0 ..< count:
     model.cycle_number = i
+    model.battery.reset()
     fn(model)
   let t_stop = epochTime()
   let duration = t_stop - t_start
