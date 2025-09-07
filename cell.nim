@@ -19,7 +19,7 @@ type
     RC_diff*: seq[RCParam] # diffusion model
     Q_bol*: Charge # nominal capacity at 1C, 3600*Ah
     I_leak_20*: Current # self-discharge current at 20°C
-    soc_tab*: SocTab # OCV vs SOC
+    SOC_to_U*: LutFn[SOC, Voltage] # OCV vs SOC
     T_to_cap*: LutFn[Temperature, Factor] # capacity factor vs temperature
     T_to_R*: LutFn[Temperature, Factor] # resistance factor vs temperature
     SOH_to_R*: LutFn[Soh, Factor] # resistance factor vs SOH
@@ -53,18 +53,6 @@ type
     soh: Soh
 
 
-proc SOC_to_U(cp: CellParam, soc: Soc): float =
-  let n = len(cp.soc_tab)
-  if soc <= 0.0:
-    return cp.soc_tab[0]
-  if soc >= 1.0:
-    return cp.soc_tab[n - 1]
-  let idx = int(soc * (n - 1).float)
-  let f1 = cp.soc_tab[idx]
-  let f2 = cp.soc_tab[idx + 1]
-  let soc1 = float(idx) / (n - 1).float
-  let soc2 = float(idx + 1) / (n - 1).float
-  return f1 + (f2 - f1) * (soc - soc1) / (soc2 - soc1)
 
 
 proc update_soc(cell: var Cell) =
@@ -158,7 +146,7 @@ proc update_charge(cell: var Cell, I: Current, dt: Interval) =
 proc update_voltage(cell: var Cell) =
   let param = cell.param
   let soc = cell.soc
-  let U_ocv = SOC_to_U(param, soc)
+  let U_ocv = param.SOC_to_U(soc)
   let U_diff = cell.RC_diff.foldl(a + b.U, 0.0)
   cell.U_src = U_ocv + cell.RC_trans.U + U_diff
   cell.U = U_ocv + cell.RC_dc.U + cell.RC_trans.U + U_diff
