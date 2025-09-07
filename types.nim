@@ -25,11 +25,8 @@ type
 proc Q_from_Ah*(Ah: Bfloat): Charge = 
   return Ah * 3600.0  
 
-
 proc Q_to_Ah*(Q: Charge): Bfloat = 
   return Q / 3600.0
-
-
 
 
 proc interpolate_hermite(tab: Tab[float, float], x: float): float =
@@ -59,10 +56,8 @@ proc mkLut*(tab: Tab[float, float]): LutFn[Bfloat, Bfloat] =
   let x1 = tab[0][0]
   let x2 = tab[^1][0]
   let dx = x2 - x1
-  
   const n = 128
   var lut: array[n + 1, Bfloat]
-
   let step_size = dx / n.Bfloat
   let step_size_inv = 1.0 / step_size
   for i in 0..n:
@@ -70,10 +65,8 @@ proc mkLut*(tab: Tab[float, float]): LutFn[Bfloat, Bfloat] =
     lut[i] = interpolate_hermite(tab, current_x)
   
   result = proc(x: Bfloat): Bfloat =
-    if x <= x1:
-      return lut[0]
-    if x >= x2:
-      return lut[n]
+    if x <= x1: return lut[0]
+    if x >= x2: return lut[n]
     let idx = int((x - x1) / step_size)
     let f1 = lut[idx]
     let f2 = lut[idx + 1]
