@@ -20,12 +20,12 @@ type
     Q_bol*: Charge # nominal capacity at 1C, 3600*Ah
     I_leak_20*: Current # self-discharge current at 20°C
     soc_tab*: SocTab # OCV vs SOC
-    T_cap_tab*: Tab[Temperature, float] # capacity factor vs temperature
-    T_R_tab*: Tab[Temperature, float] # resistance factor vs temperature
-    SOH_R_tab*: Tab[Soh, float] # resistance factor vs SOH
-    SOC_R_tab*: Tab[Soc, float] # resistance factor vs SOC
-    SOC_stress_Tab*: Tab[Soc, float] # 'stress' factor vs SOC
-    entropy_tab*: Tab[Soc, float] # entropy coefficient vs SOC
+    T_to_cap*: LutFn[Temperature, Factor] # capacity factor vs temperature
+    T_to_R*: LutFn[Temperature, Factor] # resistance factor vs temperature
+    SOH_to_R*: LutFn[Soh, Factor] # resistance factor vs SOH
+    SOC_to_R*: LutFn[Soc, Factor] # resistance factor vs SOC
+    SOC_to_stress*: LutFn[Soc, Factor] # 'stress' factor vs SOC
+    SOC_to_entropy*: LutFn[Soc, Factor] # entropy coefficient vs SOC
     RCt_core*: RCtParam # RC thermal model core to case
     RCt_cell*: RCtParam # RC thermal model case to environment
     charge_eff*: float # nominal charge efficiency
@@ -70,7 +70,7 @@ proc SOC_to_U(cp: CellParam, soc: Soc): float =
 proc update_soc(cell: var Cell) =
 
   # Temperature factor
-  let T_factor = interpolate(cell.param.T_cap_tab, cell.RCt_core.T)
+  let T_factor = cell.param.T_to_cap(cell.RCt_core.T)
 
   # Peukert factor
   var P_factor = 1.0
@@ -85,9 +85,9 @@ proc update_soc(cell: var Cell) =
 proc update_R*(cell: var Cell) =
   let param = cell.param
 
-  let T_factor = interpolate(param.T_R_tab, cell.RCt_core.T)
-  let SOH_factor = interpolate(param.SOH_R_tab, cell.soh)
-  let SOC_factor = interpolate(param.SOC_R_tab, cell.soc)
+  let T_factor = param.T_to_R(cell.RCt_core.T)
+  let SOH_factor = param.SOH_to_R(cell.soh)
+  let SOC_factor = param.SOC_to_R(cell.soc)
 
   cell.RC_dc.R = param.RC_dc.R * T_factor * SOH_factor
   cell.RC_trans.R = param.RC_trans.R * T_factor * SOC_factor * SOH_factor
@@ -112,7 +112,7 @@ proc update_soh(cell: var Cell, dt: Interval) =
   # Stress factors: power, SOC window
   let I_nominal = cell.param.Q_bol / 3600
   let power_stress = pow(abs(cell.I) / I_nominal, 1.5)
-  let soc_stress = interpolate(param.SOC_stress_Tab, cell.soc)
+  let soc_stress = param.SOC_to_stress(cell.soc)
   let degradation_rate = arrhenius(param.ap_stress, cell.RCt_core.T)
   soh_rate += -degradation_rate * power_stress * soc_stress
  
@@ -132,7 +132,7 @@ proc update_temperature(cell: var Cell, I: Current, T_env: Temperature, dt: Inte
   let P_R_diff = cell.RC_diff.foldl(a + b.I_R * b.I_R * b.R, 0.0)
   let P_loss = cell.U * max(0, I) * (1.0 - param.charge_eff)
   let P_leak = abs(cell.I_leak) * cell.U
-  let P_rev = interpolate(param.entropy_tab, cell.soc) * (cell.RCt_core.T+273.15) * I
+  let P_rev = param.SOC_to_entropy(cell.soc) * (cell.RCt_core.T+273.15) * I
   let P_dis = P_R0 + P_R_trans + P_R_diff + P_loss + P_leak + P_rev
 
   cell.RCt_core.update(param.RCt_core, P_dis, cell.RCt_cell.T, dt)
