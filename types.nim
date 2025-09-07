@@ -2,7 +2,7 @@
 
 type 
 
-  Bfloat* = float32
+  Bfloat* = float
 
   Factor* = Bfloat
   Soc* = Bfloat
@@ -55,26 +55,30 @@ proc interpolate_hermite(tab: Tab[float, float], x: float): float =
   return h1*y1 + h2*y2 + h3*m1 + h4*m2
 
 
-proc mklut*(tab: Tab[float, float]): LutFn[Bfloat, Bfloat] =
+proc mkLut*(tab: Tab[float, float]): LutFn[Bfloat, Bfloat] =
   let x1 = tab[0][0]
   let x2 = tab[^1][0]
+  let dx = x2 - x1
   
   const n = 128
-  var spline_lut: array[n + 1, Bfloat]
+  var lut: array[n + 1, Bfloat]
 
-  let step_size = (x2 - x1) / n.Bfloat
+  let step_size = dx / n.Bfloat
+  let step_size_inv = 1.0 / step_size
   for i in 0..n:
     let current_x = x1 + i.Bfloat * step_size
-    spline_lut[i] = interpolate_hermite(tab, current_x)
+    lut[i] = interpolate_hermite(tab, current_x)
   
   result = proc(x: Bfloat): Bfloat =
     if x <= x1:
-      return spline_lut[0]
+      return lut[0]
     if x >= x2:
-      return spline_lut[n]
-    let f_idx = (x - x1) / (x2 - x1) * n.Bfloat
-    let idx = int(f_idx)
-    let frac = f_idx - idx.Bfloat
-    return spline_lut[idx] + (spline_lut[idx + 1] - spline_lut[idx]) * frac
+      return lut[n]
+    let idx = int((x - x1) / step_size)
+    let f1 = lut[idx]
+    let f2 = lut[idx + 1]
+    let x1_lut = x1 + idx.Bfloat * step_size
+    return f1 + (f2 - f1) * (x - x1_lut) * step_size_inv
+
     
 
